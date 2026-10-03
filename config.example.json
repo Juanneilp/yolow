@@ -1,0 +1,143 @@
+{
+  "config_version": 1,
+
+  "timezone": "Asia/Jakarta",
+
+  "mode": {
+   "dry_run": true,
+   "shadow_candles": true,
+   "position_poll_interval_sec": 60
+  },
+
+  "rpc": {
+    "http_base": "https://mainnet.helius-rpc.com",
+    "ws_base": "wss://mainnet.helius-rpc.com",
+    "oor_fallback_poll_interval_sec": 5
+  },
+
+  "candles": {
+    "primary": "gmgn",
+    "fallback_chain": ["meteora", "geckoterminal", "onchain_ticks"],
+    "price_unit": "usd",
+    "poll_interval_sec": 20,
+    "grace_window_sec": 60,
+    "backfill_candles": 200,
+    "stale_data_pause_sec": 300,
+    "providers": {
+      "gmgn": {
+        "rate_limit_rps": 2
+      },
+      "meteora": {
+        "base_url": "https://dlmm.datapi.meteora.ag",
+        "rate_limit_rps": 10,
+        "build_15m_from_5m": true
+      },
+      "geckoterminal": {
+        "base_url": "https://api.geckoterminal.com/api/v2"
+      },
+      "onchain_ticks": {
+        "enabled": true,
+        "sol_usd_source": "jupiter"
+      }
+    }
+  },
+
+  "indicator_exit": {
+    "enabled": true,
+    "timeframe": "15m",
+    "min_age_candles": 1,
+    "indicators": {
+      "rsi": { "period": 2, "overbought": 90 },
+      "bb": { "period": 20, "std_dev": 2.0 },
+      "macd": { "fast": 12, "slow": 26, "signal": 9 }
+    },
+    "rule": {
+      "rsi_required": true,
+      "confirmations_any_of": ["bb_breakout", "macd_first_green"]
+    }
+  },
+
+  "oor_exit": {
+    "evaluation": "live",
+    "below": {
+      "enabled": true,
+      "trigger_bins": 20,
+      "confirm_sec": 5
+    },
+    "above": {
+      "enabled": true,
+      "trigger_bins": 20,
+      "confirm_sec": 30
+    }
+  },
+
+  "pool_overrides": {},
+
+  "execution": {
+    "priority_fee": {
+      "mode": "fixed",
+      "microlamports": 100000,
+      "max_cap_microlamports": 500000
+    },
+    "max_retries": 3
+  },
+
+  "swap": {
+    "enabled": true,
+    "output": "SOL",
+    "min_value_usd": 0.5,
+    "slippage_bps": 500,
+    "max_slippage_bps": 1500,
+    "max_retries": 3,
+    "close_empty_token_account": false
+  },
+
+  "top_trending": {
+    "enabled": true,
+    "limit": 10,
+    "min_market_cap_usd": 500000,
+    "min_token_age_hours": 6,
+    "max_token_age_days": 60,
+    "min_holders": 1000,
+    "min_tvl_usd": 10000,
+    "min_organic_score": 70
+  },
+
+  "jupiter": {
+    "base_url": "https://api.jup.ag/swap/v1",
+    "tokens_base_url": "https://api.jup.ag/tokens/v2"
+  },
+
+  "notify": {
+    "low_sol_balance_alert_sol": 0.05,
+    "heartbeat": {
+      "enabled": false,
+      "at_time": "08:00"
+    }
+  },
+
+  "history": {
+    "enabled": true,
+    "record_dry_run_trades": true,
+    "snapshot_interval_sec": 60,
+    "snapshot_retention_days": 180,
+    "candle_audit_retention_days": 60,
+    "context_candles": 50,
+    "post_exit_marks_min": [15, 60, 240, 1440],
+    "csv_export": {
+      "enabled": true,
+      "dir": "./exports",
+      "file": "trades.csv"
+    },
+    "backup": {
+      "enabled": true,
+      "dir": "./backups",
+      "at_time": "03:00",
+      "keep": 14
+    }
+  },
+
+  "logging": {
+    "level": "info"
+  }
+}

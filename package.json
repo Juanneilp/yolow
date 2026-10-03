@@ -1,0 +1,12 @@
+{
+  "name": "yolow-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.21.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env --experimental-strip-types src/main.ts",
+    "test": "node --experimental-strip-types --test test/top-trending.test.ts test/bot.test.ts"
+  }
+}
