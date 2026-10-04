@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "node --env-file=.env --experimental-transform-types src/main.ts",
-    "test": "node --experimental-transform-types --test test/top-trending.test.ts test/bot.test.ts test/agent-logic.test.ts test/config.test.ts"
+    "test": "node --experimental-transform-types --test test/top-trending.test.ts test/bot.test.ts test/agent-logic.test.ts test/config.test.ts test/security.test.ts"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "1.9.8",

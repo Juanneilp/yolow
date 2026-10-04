@@ -15,8 +15,15 @@ import { getMeta, setMeta } from "../storage/db.ts";
 import { discoverPositions, listPositions } from "../positions/monitor.ts";
 import { persistTradeCsv } from "../journal/export.ts";
 import { join } from "node:path";
+import { readJsonResponse, safeError } from "../security.ts";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
+const JUPITER_SWAP_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+const ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const TOKEN_PROGRAM_IDS = new Set([
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+]);
 
 class SkipClose extends Error {
   constructor(message: string, readonly outcome: string) { super(message); }
@@ -49,7 +56,13 @@ type JupiterInstruction = {
 };
 
 type JupiterBuild = {
+  inputMint?: string;
+  outputMint?: string;
+  inAmount?: string;
   outAmount?: string;
+  otherAmountThreshold?: string;
+  slippageBps?: number;
+  swapMode?: string;
   priceImpact?: number;
   priceImpactPct?: string;
   error?: string;
@@ -58,11 +71,25 @@ type JupiterBuild = {
   swapInstruction?: JupiterInstruction;
   cleanupInstruction?: JupiterInstruction | null;
   otherInstructions?: JupiterInstruction[];
+  tipInstruction?: JupiterInstruction | null;
   addressesByLookupTableAddress?: Record<string, string[]> | null;
   blockhashWithMetadata?: { blockhash: number[]; lastValidBlockHeight: number };
 };
 
-function toJupiterInstruction(instruction: JupiterInstruction): TransactionInstruction {
+function toJupiterInstruction(instruction: JupiterInstruction, wallet: PublicKey, allowedPrograms: Set<string>): TransactionInstruction {
+  if (!instruction || typeof instruction.programId !== "string" || !Array.isArray(instruction.accounts) ||
+      instruction.accounts.length > 256 || typeof instruction.data !== "string" ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(instruction.data)) {
+    throw new Error("Jupiter mengembalikan instruksi dengan format tidak valid");
+  }
+  if (!allowedPrograms.has(instruction.programId)) throw new Error("Jupiter mengembalikan program swap yang tidak diizinkan");
+  for (const account of instruction.accounts) {
+    if (typeof account?.pubkey !== "string" || typeof account.isSigner !== "boolean" || typeof account.isWritable !== "boolean") {
+      throw new Error("Jupiter mengembalikan account meta dengan format tidak valid");
+    }
+    if (account.isSigner && account.pubkey !== wallet.toBase58()) throw new Error("Jupiter meminta signer selain wallet agent");
+  }
+  if (Buffer.from(instruction.data, "base64").byteLength > 1232) throw new Error("Data instruksi Jupiter melebihi batas transaksi");
   return new TransactionInstruction({
     programId: new PublicKey(instruction.programId),
     keys: instruction.accounts.map((account) => ({
@@ -74,6 +101,29 @@ function toJupiterInstruction(instruction: JupiterInstruction): TransactionInstr
   });
 }
 
+export function jupiterTransactionInstructions(build: JupiterBuild, wallet: PublicKey): TransactionInstruction[] {
+  const setup = build.setupInstructions ?? [];
+  if (!Array.isArray(setup) || setup.length > 8 || (build.otherInstructions?.length ?? 0) !== 0 || build.tipInstruction) {
+    throw new Error("Jupiter mengembalikan instruksi tambahan yang tidak diizinkan");
+  }
+  const instructions = setup.map((instruction) => {
+    const result = toJupiterInstruction(instruction, wallet, new Set([ASSOCIATED_TOKEN_PROGRAM_ID]));
+    if (result.keys.length < 6 || !result.keys[0].pubkey.equals(wallet) || !result.keys[0].isSigner ||
+        !result.keys[2].pubkey.equals(wallet)) throw new Error("Jupiter setup harus membuat ATA milik wallet agent");
+    return result;
+  });
+  instructions.push(toJupiterInstruction(build.swapInstruction!, wallet, new Set([JUPITER_SWAP_PROGRAM_ID])));
+  if (build.cleanupInstruction) {
+    const cleanup = toJupiterInstruction(build.cleanupInstruction, wallet, TOKEN_PROGRAM_IDS);
+    if (cleanup.keys.length < 3 || !cleanup.keys[1].pubkey.equals(wallet) || !cleanup.keys[2].pubkey.equals(wallet) || !cleanup.keys[2].isSigner) {
+      throw new Error("Jupiter cleanup harus mengembalikan akun token ke wallet agent");
+    }
+    instructions.push(cleanup);
+  }
+  if (instructions.length > 10) throw new Error("Jupiter mengembalikan terlalu banyak instruksi");
+  return instructions;
+}
+
 export async function loadSigner(path: string, wallet: PublicKey): Promise<Keypair> {
   const resolvedPath = await realpath(resolve(path));
   const relativePath = relative(await realpath(process.cwd()), resolvedPath);
@@ -81,6 +131,8 @@ export async function loadSigner(path: string, wallet: PublicKey): Promise<Keypa
     throw new Error("AGENT_KEYPAIR_PATH harus berada di luar repository");
   }
   const fileStat = await stat(resolvedPath);
+  if (!fileStat.isFile() || fileStat.size > 4_096) throw new Error("File keypair harus berupa file kecil yang valid");
+  if (typeof process.getuid === "function" && fileStat.uid !== process.getuid()) throw new Error("File keypair harus dimiliki user yang menjalankan Yolow");
   if (process.platform !== "win32" && (fileStat.mode & 0o077) !== 0) throw new Error("Izin file keypair terlalu terbuka; gunakan chmod 600");
   const secret = JSON.parse(await readFile(resolvedPath, "utf8"));
   if (!Array.isArray(secret) || secret.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) throw new Error("File keypair harus berupa array byte Solana");
@@ -274,7 +326,7 @@ export class CloseExecutor {
     this.inFlight.add(trigger.positionId);
     try { return await this.closePosition(trigger); }
     catch (error) {
-      const reason = error instanceof Error ? error.message : "unknown error";
+      const reason = safeError(error);
       if (error instanceof SkipClose) {
         this.markTrigger(trigger, error.outcome);
         await this.options.notify(`ℹ️ CLOSE DILEWATI\nSinyal exit: ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}\nPosisi ${trigger.positionId}\n${reason}`);
@@ -511,7 +563,7 @@ export class CloseExecutor {
           .run(JSON.stringify(chainStatus.err), Date.now(), signature);
         throw error;
       }
-      const reason = error instanceof Error ? error.message : "confirmation pending";
+      const reason = safeError(error);
       this.options.db.prepare("UPDATE transactions SET status='UNKNOWN',error=? WHERE signature=?").run(reason, signature);
       this.options.db.prepare("INSERT INTO trade_events(trade_id,at,type,payload) SELECT trade_id,?,'CLOSE_UNKNOWN',? FROM trade_history WHERE position_id=?")
         .run(Date.now(), JSON.stringify({ signature, error: reason }), position.id);
@@ -635,11 +687,11 @@ export class CloseExecutor {
     try {
       const priceUrl = new URL(priceBase);
       priceUrl.searchParams.set("ids", SOL_MINT);
-      const response = await fetch(priceUrl, { headers: { "x-api-key": this.options.jupiterApiKey }, signal: AbortSignal.timeout(15_000) });
-      const body = await response.json() as Record<string, { usdPrice?: number }>;
+      const response = await fetch(priceUrl, { headers: { "x-api-key": this.options.jupiterApiKey }, redirect: "error", signal: AbortSignal.timeout(15_000) });
+      const body = await readJsonResponse<Record<string, { usdPrice?: number }>>(response);
       solUsd = Number(body[SOL_MINT]?.usdPrice ?? body.data?.[SOL_MINT]?.usdPrice ?? 0);
       if (!response.ok || !Number.isFinite(solUsd) || solUsd <= 0) throw new Error("SOL/USD price tidak tersedia");
-    } catch (error) { saveSwap("FAILED", { error: error instanceof Error ? error.message : "SOL/USD price unavailable" }); throw error; }
+    } catch (error) { saveSwap("FAILED", { error: safeError(error) }); throw error; }
 
     let lastError = "no route";
     for (let attempt = 0; attempt < this.options.config.swap.max_retries; attempt += 1) {
@@ -655,17 +707,29 @@ export class CloseExecutor {
       let buildResponse: Response;
       let build: JupiterBuild;
       try {
-        buildResponse = await fetch(buildUrl, { headers: { "x-api-key": this.options.jupiterApiKey }, signal: AbortSignal.timeout(20_000) });
-        build = await buildResponse.json() as JupiterBuild;
+        buildResponse = await fetch(buildUrl, { headers: { "x-api-key": this.options.jupiterApiKey }, redirect: "error", signal: AbortSignal.timeout(20_000) });
+        build = await readJsonResponse<JupiterBuild>(buildResponse);
       } catch (error) {
-        lastError = error instanceof Error ? error.message : "Jupiter build request failed";
+        lastError = safeError(error);
         continue;
       }
       if (!buildResponse.ok || !build.outAmount || !build.swapInstruction) {
-        lastError = build.errorMessage ?? build.error ?? `Jupiter build HTTP ${buildResponse.status}`;
+        lastError = safeError(build.errorMessage ?? build.error ?? `Jupiter build HTTP ${buildResponse.status}`);
+        continue;
+      }
+      if (build.inputMint !== position.tokenMint || build.outputMint !== SOL_MINT ||
+          build.inAmount !== tokenAmount.toString() || build.swapMode !== "ExactIn" || build.slippageBps !== slippage ||
+          typeof build.outAmount !== "string" || !/^\d{1,40}$/.test(build.outAmount) || BigInt(build.outAmount) <= 0n ||
+          typeof build.otherAmountThreshold !== "string" || !/^\d{1,40}$/.test(build.otherAmountThreshold) ||
+          BigInt(build.otherAmountThreshold) <= 0n || BigInt(build.otherAmountThreshold) > BigInt(build.outAmount)) {
+        lastError = "Jupiter mengembalikan quote yang tidak cocok dengan input swap";
         continue;
       }
       const priceImpact = Number(build.priceImpact ?? (Number(build.priceImpactPct ?? 0) * 100));
+      if (!Number.isFinite(priceImpact) || priceImpact < 0 || priceImpact > 100) {
+        lastError = "Jupiter mengembalikan price impact yang tidak valid";
+        continue;
+      }
       const estimatedUsd = Number(build.outAmount) / 1_000_000_000 * solUsd;
       if (estimatedUsd < this.options.config.swap.min_value_usd) {
         saveSwap("SKIPPED_DUST", { out: build.outAmount, usd: estimatedUsd, impact: priceImpact, slippage });
@@ -684,7 +748,10 @@ export class CloseExecutor {
         return;
       }
       if (!this.signer) throw new Error("Live mode memerlukan signer yang valid");
-      if (!build.blockhashWithMetadata || !Array.isArray(build.blockhashWithMetadata.blockhash) || build.blockhashWithMetadata.blockhash.length !== 32 || !Number.isInteger(build.blockhashWithMetadata.lastValidBlockHeight)) {
+      if (!build.blockhashWithMetadata || !Array.isArray(build.blockhashWithMetadata.blockhash) ||
+          build.blockhashWithMetadata.blockhash.length !== 32 ||
+          build.blockhashWithMetadata.blockhash.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255) ||
+          !Number.isSafeInteger(build.blockhashWithMetadata.lastValidBlockHeight) || build.blockhashWithMetadata.lastValidBlockHeight < 1) {
         lastError = "Jupiter build tidak mengembalikan blockhash yang valid";
         continue;
       }
@@ -694,13 +761,10 @@ export class CloseExecutor {
       try {
         const configuredMicroLamports = Number(this.options.config.execution.priority_fee.microlamports);
         const capMicroLamports = Number(this.options.config.execution.priority_fee.max_cap_microlamports);
-        const instructions = [
-          ...(build.setupInstructions ?? []).map(toJupiterInstruction),
-          toJupiterInstruction(build.swapInstruction),
-          ...(build.cleanupInstruction ? [toJupiterInstruction(build.cleanupInstruction)] : []),
-          ...(build.otherInstructions ?? []).map(toJupiterInstruction),
-        ];
-        const lookupTables = await Promise.all(Object.keys(build.addressesByLookupTableAddress ?? {}).map(async (address) => {
+        const instructions = jupiterTransactionInstructions(build, this.options.wallet);
+        const lookupAddresses = Object.keys(build.addressesByLookupTableAddress ?? {});
+        if (lookupAddresses.length > 10) throw new Error("Jupiter mengembalikan terlalu banyak lookup table");
+        const lookupTables = await Promise.all(lookupAddresses.map(async (address) => {
           const result = await this.options.connection.getAddressLookupTable(new PublicKey(address), { commitment: "confirmed" });
           if (!result.value) throw new Error(`Jupiter address lookup table ${address} tidak ditemukan`);
           return result.value;
@@ -723,7 +787,7 @@ export class CloseExecutor {
         transaction = makeTransaction(computeUnits);
         transaction.sign([this.signer]);
       } catch (error) {
-        lastError = error instanceof Error ? error.message : "Jupiter transaction assembly failed";
+        lastError = safeError(error);
         continue;
       }
       const signature = bs58.encode(transaction.signatures[0]);
@@ -756,7 +820,7 @@ export class CloseExecutor {
           lastError = `swap transaction failed: ${JSON.stringify(chainStatus.err)}`;
           continue;
         } else {
-          const reason = error instanceof Error ? error.message : "confirmation pending";
+          const reason = safeError(error);
           this.options.db.prepare("UPDATE transactions SET status='UNKNOWN',error=? WHERE signature=?").run(reason, signature);
           this.options.db.prepare("UPDATE swaps SET status='UNKNOWN',error=?,updated_at=? WHERE signature=?")
             .run("Status konfirmasi belum diketahui; tidak dikirim ulang otomatis", Date.now(), signature);
@@ -792,7 +856,7 @@ export class CloseExecutor {
     this.swapsInFlight.add(position.id);
     try { await this.processSwap(position, amount, dryRun, closeSignature); }
     catch (error) {
-      const reason = error instanceof Error ? error.message : "unknown error";
+      const reason = safeError(error);
       const status = error instanceof UnknownBroadcast ? "UNKNOWN" : "FAILED";
       this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
         .run(status, Date.now(), position.id);

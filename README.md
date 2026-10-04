@@ -9,6 +9,7 @@ Requirements: Node.js 22.21 or newer, a Telegram bot, a Helius API key, a Jupite
 ```sh
 cp config.example.json config.json
 cp .env.example .env
+chmod 600 .env config.json
 npm install
 ```
 
@@ -17,12 +18,16 @@ Set these values in `.env`:
 ```text
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
+# Optional when using a group chat; only this Telegram user can control Yolow.
+TELEGRAM_USER_ID=...
 HELIUS_API_KEY=...
 AGENT_WALLET_PUBKEY=...
 JUPITER_API_KEY=...
 ```
 
-`GMGN_API_KEY` is optional for Top Trending ATH data. Live signing also requires `AGENT_KEYPAIR_PATH`; point it to a Solana JSON keypair stored outside this repository with file permissions set to `600`. The agent checks that the keypair matches `AGENT_WALLET_PUBKEY`. Never put the secret key in `.env`, `config.json`, or Telegram.
+`GMGN_API_KEY` is optional for Top Trending ATH data. In a private chat, leave `TELEGRAM_USER_ID` blank; it defaults to `TELEGRAM_CHAT_ID`. In a group, set the allowed sender's numeric Telegram user ID. Live signing also requires `AGENT_KEYPAIR_PATH`; point it to a Solana JSON keypair stored outside this repository with file permissions set to `600`. The agent checks that the keypair matches `AGENT_WALLET_PUBKEY`. Never put the secret key in `.env`, `config.json`, or Telegram.
+
+Yolow restricts secret-bearing RPC and Jupiter requests to their configured HTTPS hosts and rejects redirects; endpoint credentials belong in `.env`, never in config URLs. Startup tightens `.env` and config file permissions to `600`. Telegram control requires both the configured chat and sender ID. Live Jupiter builds are checked for the expected token pair, amount, router program, instruction signers, and wallet-owned token accounts before signing.
 
 `DB_PATH` and `CONFIG_PATH` are optional. They default to `./data/yolow.db` and `./config.json`.
 

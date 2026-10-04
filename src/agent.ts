@@ -6,6 +6,7 @@ import type { AppConfig } from "./config/config.ts";
 import type { Candle, Timeframe, Trigger } from "./domain/types.ts";
 import { fetchCandleAt, fetchCandleSeries, loadCandles, saveCandles } from "./market-data/candles.ts";
 import { indicatorExitSignal } from "./market-data/indicators.ts";
+import { readJsonResponse, safeError, telegramApiBase } from "./security.ts";
 import { ActiveBinMonitor } from "./market-data/active-bin.ts";
 import { listPositions } from "./positions/monitor.ts";
 import { CloseExecutor } from "./execution/executor.ts";
@@ -121,14 +122,14 @@ export class YolowAgent {
   }
 
   private readonly notify = async (message: string): Promise<void> => {
-    const endpoint = `https://api.telegram.org/bot${this.options.telegramToken}/sendMessage`;
+    const endpoint = `${telegramApiBase(this.options.telegramToken)}/sendMessage`;
     try {
       const response = await fetch(endpoint, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: this.options.chatId, text: message }), signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ chat_id: this.options.chatId, text: message }), redirect: "error", signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok) throw new Error(`Telegram notification HTTP ${response.status}`);
-      const result = await response.json() as { ok?: boolean; description?: string };
+      const result = await readJsonResponse<{ ok?: boolean; description?: string }>(response, 1_000_000);
       if (!result.ok) throw new Error(`Telegram notification failed: ${result.description ?? "unknown"}`);
     } catch (error) { console.warn("Telegram notification failed:", safeError(error)); }
   };
@@ -362,8 +363,6 @@ export class YolowAgent {
     schedule();
   }
 }
-
-function safeError(error: unknown): string { return error instanceof Error ? error.message : "unknown error"; }
 
 function wibStamp(epoch: number, timezone: string): string {
   return new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(epoch));

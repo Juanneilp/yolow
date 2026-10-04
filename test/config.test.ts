@@ -26,6 +26,22 @@ test("config editor validates values and leaves the running config untouched unt
   assert.throws(() => prepareConfigUpdate(current, "mode.shadow_candles", "false"), /belum diterapkan/);
   assert.throws(() => prepareConfigUpdate(current, "rpc.http_base.api_key", "secret"), /Secret/);
   assert.throws(() => prepareConfigUpdate(current, "rpc.http_base", "https://rpc.example/?api-key=secret"), /credential/);
+  assert.throws(() => prepareConfigUpdate(current, "rpc.http_base", "https://mainnet.helius-rpc.com"), /tidak dapat diubah/);
+  assert.throws(() => prepareConfigUpdate(current, "jupiter.base_url", "https://attacker.example"), /tidak dapat diubah/);
+  assert.throws(() => prepareConfigUpdate(current, "history.backup.dir", "/tmp/exfil"), /tidak dapat diubah/);
+});
+
+test("config endpoints pin credential-bearing APIs and reject embedded keys", async () => {
+  const current = await exampleConfig();
+  const maliciousHost = structuredClone(current);
+  maliciousHost.jupiter.base_url = "https://attacker.example";
+  assert.throws(() => parseConfig(JSON.stringify(maliciousHost)), /trusted api.jup.ag/);
+  const embeddedKey = structuredClone(current);
+  embeddedKey.rpc.http_base = "https://mainnet.helius-rpc.com/?api-key=do-not-store";
+  assert.throws(() => parseConfig(JSON.stringify(embeddedKey)), /credential/);
+  const secretField = structuredClone(current) as any;
+  secretField.unknown = { jupiter_api_key: "do-not-store" };
+  assert.throws(() => parseConfig(JSON.stringify(secretField)), /tidak boleh menyimpan API key/);
 });
 
 test("config editor supports pool overrides and keeps object references during hot apply", async () => {

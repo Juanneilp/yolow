@@ -1,5 +1,7 @@
+import { readJsonResponse, safeError, telegramApiBase } from "../security.ts";
+
 export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
-  const api = `https://api.telegram.org/bot${token}/sendMessage`;
+  const api = `${telegramApiBase(token)}/sendMessage`;
   const lines = text.split("\n");
   const chunks: string[] = [];
   let current = "";
@@ -12,12 +14,16 @@ export async function sendTelegramMessage(token: string, chatId: string, text: s
   }
   if (current) chunks.push(current);
   for (const chunk of chunks) {
-    const response = await fetch(api, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk }), signal: AbortSignal.timeout(15_000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(api, {
+        method: "POST", headers: { "content-type": "application/json" },
+        redirect: "error",
+        body: JSON.stringify({ chat_id: chatId, text: chunk }), signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) { throw new Error(safeError(error)); }
     if (!response.ok) throw new Error(`Telegram sendMessage returned HTTP ${response.status}`);
-    const result = await response.json() as { ok?: boolean; description?: string };
-    if (!result.ok) throw new Error(`Telegram sendMessage failed: ${result.description ?? "unknown error"}`);
+    const result = await readJsonResponse<{ ok?: boolean; description?: string }>(response, 1_000_000);
+    if (!result.ok) throw new Error(`Telegram sendMessage failed: ${safeError(result.description ?? "unknown error")}`);
   }
 }

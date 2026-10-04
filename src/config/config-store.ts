@@ -11,6 +11,27 @@ export type ConfigUpdate = {
   restartRequired: boolean;
 };
 
+const editablePaths = new Set([
+  "indicator_exit.enabled", "indicator_exit.timeframe", "indicator_exit.min_age_candles",
+  "indicator_exit.indicators.rsi.period", "indicator_exit.indicators.rsi.overbought",
+  "indicator_exit.indicators.bb.period", "indicator_exit.indicators.bb.std_dev",
+  "indicator_exit.indicators.macd.fast", "indicator_exit.indicators.macd.slow", "indicator_exit.indicators.macd.signal",
+  "indicator_exit.rule.rsi_required", "indicator_exit.rule.confirmations_any_of",
+  "oor_exit.below.enabled", "oor_exit.below.trigger_bins", "oor_exit.below.confirm_sec",
+  "oor_exit.above.enabled", "oor_exit.above.trigger_bins", "oor_exit.above.confirm_sec",
+  "top_trending.enabled", "top_trending.limit", "top_trending.min_market_cap_usd",
+  "top_trending.min_token_age_hours", "top_trending.max_token_age_days", "top_trending.min_holders",
+  "top_trending.min_tvl_usd", "top_trending.min_organic_score",
+  "execution.max_retries", "execution.priority_fee.microlamports", "execution.priority_fee.max_cap_microlamports",
+  "swap.enabled", "swap.min_value_usd", "swap.slippage_bps", "swap.max_slippage_bps", "swap.max_retries",
+  "candles.primary", "candles.fallback_chain", "candles.price_unit", "candles.poll_interval_sec",
+  "candles.grace_window_sec", "candles.backfill_candles", "candles.stale_data_pause_sec",
+  "notify.low_sol_balance_alert_sol", "notify.heartbeat.enabled", "notify.heartbeat.at_time",
+  "history.snapshot_interval_sec", "history.snapshot_retention_days", "history.context_candles",
+  "history.csv_export.enabled", "history.backup.enabled", "history.backup.at_time", "history.backup.keep",
+  "timezone", "mode.position_poll_interval_sec", "rpc.oor_fallback_poll_interval_sec",
+]);
+
 export function prepareConfigUpdate(current: AppConfig, path: string, rawValue: string): ConfigUpdate {
   const parts = path.split(".");
   if (!path || path.length > 200 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) {
@@ -56,6 +77,9 @@ export function prepareConfigUpdate(current: AppConfig, path: string, rawValue: 
     const hasSecret = endpoint.username || endpoint.password || [...endpoint.searchParams.keys()]
       .some((key) => /^(api[_-]?key|access[_-]?token|token|secret|key)$/i.test(key));
     if (hasSecret) throw new Error("Simpan credential di .env; config.json hanya boleh memuat endpoint tanpa secret.");
+  }
+  if (!editablePaths.has(path) && !(parts[0] === "pool_overrides" && validPoolOverridePath(parts))) {
+    throw new Error("Path config ini tidak dapat diubah melalui Telegram.");
   }
   setAtPath(draft, parts, newValue);
   const config = parseConfig(JSON.stringify(draft));

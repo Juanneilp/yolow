@@ -8,6 +8,7 @@ import { getMeta, setMeta } from "../storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { YolowAgent } from "../agent.ts";
 import { sendTelegramDocument, tradesCsv, writeTradesCsv } from "../journal/export.ts";
+import { redactSecrets, safeError } from "../security.ts";
 
 type Reply = { text: string; replyMarkup?: Record<string, unknown> };
 type Options = {
@@ -138,14 +139,14 @@ export function createCommandHandler(options: Options) {
             if (path === "indicator_exit.timeframe") {
               try { await agent.setTimeframe(update.config.indicator_exit.timeframe); }
               catch (error) {
-                const reason = error instanceof Error ? error.message : "unknown error";
+                const reason = safeError(error);
                 console.warn("Config saved but timeframe refresh failed:", reason);
                 refreshNote = `\nRefresh candle perlu dicoba ulang: ${reason}`;
               }
             }
             return { text: `✅ CONFIG DISIMPAN\n${path}\nSebelum: ${configDisplayValue(path, update.oldValue)}\nSekarang: ${configDisplayValue(path, update.newValue)}\n${update.restartRequired ? "Perubahan aktif setelah PM2 restart yolow." : "Perubahan aktif sekarang."}${refreshNote}`, replyMarkup: configMenuMarkup };
           } catch (error) {
-            const reason = error instanceof Error ? error.message : "unknown error";
+            const reason = safeError(error);
             return { text: `❌ CONFIG TIDAK DIUBAH\n${reason}`, replyMarkup: configMenuMarkup };
           }
         }
@@ -202,11 +203,11 @@ export function createCommandHandler(options: Options) {
         if (!args[0]) return { text: "Gunakan /trade <trade_id|position_id>." };
         const trade = findTrade(db, args[0]);
         if (!trade) noTrade(args[0]);
-        const tags = JSON.parse(trade.tags || "[]").join(", ") || "—";
+        const tags = redactSecrets(JSON.parse(trade.tags || "[]").join(", ")) || "—";
         const marks = db.prepare("SELECT offset_min,price_usd,percent_vs_exit,status,reason FROM post_exit_marks WHERE trade_id=? ORDER BY offset_min")
           .all(trade.trade_id) as Array<Record<string, any>>;
-        const postExit = marks.map((mark) => `${mark.offset_min}m: ${mark.status === "RECORDED" ? `$${Number(mark.price_usd).toPrecision(6)} (${Number(mark.percent_vs_exit).toFixed(2)}%)` : mark.reason ?? mark.status}`).join(" · ") || "—";
-        return { text: `📒 TRADE #${trade.trade_id}\nMode ${trade.mode} · ${trade.finalized_at ? "final" : "berjalan"}\nPosisi ${trade.position_id}\nPool ${trade.pool}\nToken ${trade.token_mint}\nRange ${trade.lower_bin}–${trade.upper_bin}\nMasuk ${wib(trade.first_seen_at)}\nKeluar ${wib(trade.exit_at)}\nTrigger ${trade.trigger_reason ?? "—"}\nSOL close ${trade.sol_received ?? "—"} · SOL swap ${trade.swap_sol_received ?? "—"}\nTotal ${trade.total_sol_returned ?? "—"} SOL · PnL ${trade.pnl_sol ?? trade.pnl_reason ?? "belum dihitung"}\nSwap ${trade.swap_status ?? "—"}\nSetelah exit ${postExit}\nCatatan ${trade.notes ?? "—"}\nTag ${tags}` };
+        const postExit = marks.map((mark) => `${mark.offset_min}m: ${mark.status === "RECORDED" ? `$${Number(mark.price_usd).toPrecision(6)} (${Number(mark.percent_vs_exit).toFixed(2)}%)` : redactSecrets(mark.reason ?? mark.status)}`).join(" · ") || "—";
+        return { text: `📒 TRADE #${trade.trade_id}\nMode ${trade.mode} · ${trade.finalized_at ? "final" : "berjalan"}\nPosisi ${trade.position_id}\nPool ${trade.pool}\nToken ${trade.token_mint}\nRange ${trade.lower_bin}–${trade.upper_bin}\nMasuk ${wib(trade.first_seen_at)}\nKeluar ${wib(trade.exit_at)}\nTrigger ${trade.trigger_reason ?? "—"}\nSOL close ${trade.sol_received ?? "—"} · SOL swap ${trade.swap_sol_received ?? "—"}\nTotal ${trade.total_sol_returned ?? "—"} SOL · PnL ${trade.pnl_sol ?? redactSecrets(trade.pnl_reason ?? "belum dihitung")}\nSwap ${trade.swap_status ?? "—"}\nSetelah exit ${postExit}\nCatatan ${redactSecrets(trade.notes ?? "—")}\nTag ${tags}` };
       }
       case "/stats": {
         const period = args[0] ?? "all";
@@ -229,7 +230,7 @@ export function createCommandHandler(options: Options) {
         if (args.length < 2) return { text: "Gunakan /note <trade_id|position_id> <catatan>." };
         const trade = findTrade(db, args[0]);
         if (!trade) noTrade(args[0]);
-        const note = args.slice(1).join(" ").slice(0, 2000);
+        const note = redactSecrets(args.slice(1).join(" ")).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").slice(0, 2000);
         db.prepare("UPDATE trade_history SET notes=? WHERE trade_id=?").run(note, trade.trade_id);
         db.prepare(`INSERT INTO trade_events(trade_id,at,type,payload) VALUES(?,?,'NOTE',?)`)
           .run(trade.trade_id, Date.now(), JSON.stringify({ note }));
@@ -240,14 +241,17 @@ export function createCommandHandler(options: Options) {
         const trade = findTrade(db, args[0]);
         if (!trade) noTrade(args[0]);
         const tags = JSON.parse(trade.tags || "[]") as string[];
-        const tag = args.slice(1).join(" ").trim().slice(0, 80);
+        const tag = redactSecrets(args.slice(1).join(" ")).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+        if (!tag) return { text: "Tag tidak boleh kosong." };
         if (!tags.includes(tag)) tags.push(tag);
+        if (tags.length > 20) return { text: "Maksimal 20 tag per trade." };
         db.prepare("UPDATE trade_history SET tags=? WHERE trade_id=?").run(JSON.stringify(tags), trade.trade_id);
         db.prepare(`INSERT INTO trade_events(trade_id,at,type,payload) VALUES(?,?,'TAG',?)`)
           .run(trade.trade_id, Date.now(), JSON.stringify({ tag, tags }));
         return { text: `Tag '${tag}' disimpan pada trade #${trade.trade_id}.` };
       }
       case "/export": {
+        if (!config.history.csv_export.enabled) return { text: "Export CSV sedang dinonaktifkan di config." };
         const path = join(config.history.csv_export.dir, config.history.csv_export.file);
         const contents = tradesCsv(db, config.timezone, config.history.post_exit_marks_min);
         await writeTradesCsv(db, path, config.timezone, config.history.post_exit_marks_min);
@@ -256,6 +260,7 @@ export function createCommandHandler(options: Options) {
       }
       case "/retryswap": {
         if (!args[0]) return { text: "Gunakan /retryswap <position_id>." };
+        if (args[0].length < 8 || args[0].length > 44 || !/^[1-9A-HJ-NP-Za-km-z]+$/.test(args[0])) return { text: "ID posisi harus berupa prefix Base58 yang valid." };
         const rows = db.prepare("SELECT position_id FROM trade_history WHERE position_id=? OR position_id LIKE ?")
           .all(args[0], `${args[0]}%`) as Array<{ position_id: string }>;
         if (rows.length > 1) return { text: "ID posisi tidak unik; kirim lebih banyak karakter." };
@@ -306,6 +311,7 @@ export function createCommandHandler(options: Options) {
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);
+      if (!["/status", "/positions", "/history", "/stats", "/export", "/tf", "/config"].includes(command.toLowerCase())) return undefined;
       return onCommand(command, args);
     }
     return undefined;

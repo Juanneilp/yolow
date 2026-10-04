@@ -1,8 +1,10 @@
 import { fetchTopTrending, formatTopTrending, type TopTrendingConfig } from "../market-data/top-trending.ts";
+import { readJsonResponse, safeError, telegramApiBase } from "../security.ts";
 
 type BotOptions = {
   token: string;
   chatId: string;
+  userId?: string;
   config: TopTrendingConfig;
   trendingEnabled?: () => boolean;
   jupiterApiKey: string;
@@ -21,6 +23,12 @@ export function actionForMessage(text: string): "menu" | "start" | "top_trending
   if (label === "menu" || command === "/menu") return "menu";
   if (command === "/start") return "start";
   if (command === "/toptrending" || label === "top trending") return "top_trending";
+}
+
+export function isAuthorizedUpdate(update: any, chatId: string, userId = chatId): boolean {
+  const message = update.message ?? update.callback_query?.message;
+  const senderId = update.message?.from?.id ?? update.callback_query?.from?.id;
+  return String(message?.chat?.id ?? "") === chatId && String(senderId ?? "") === userId;
 }
 
 export const mainMenuMarkup = { inline_keyboard: [
@@ -48,7 +56,7 @@ function withMenuNavigation(markup?: Record<string, unknown>): Record<string, un
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function runBot(options: BotOptions): Promise<void> {
-  const api = `https://api.telegram.org/bot${options.token}`;
+  const api = telegramApiBase(options.token);
   let offset = 0;
 
   async function telegram(method: string, body: Record<string, unknown>): Promise<any> {
@@ -56,6 +64,7 @@ export async function runBot(options: BotOptions): Promise<void> {
     try {
       response = await fetch(`${api}/${method}`, {
         method: "POST",
+        redirect: "error",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
         signal: options.signal
@@ -66,7 +75,7 @@ export async function runBot(options: BotOptions): Promise<void> {
       throw new Error(`Telegram ${method} request failed or timed out`);
     }
     if (!response.ok) throw new Error(`Telegram ${method} returned HTTP ${response.status}`);
-    const result = await response.json() as { ok?: boolean; result?: any; description?: string };
+    const result = await readJsonResponse<{ ok?: boolean; result?: any; description?: string }>(response, 1_000_000);
     if (!result.ok) throw new Error(`Telegram ${method} failed: ${result.description || "unknown error"}`);
     return result.result;
   }
@@ -148,13 +157,13 @@ export async function runBot(options: BotOptions): Promise<void> {
       const updates = await telegram("getUpdates", {
         offset,
         timeout: 30,
+        limit: 10,
         allowed_updates: ["message", "callback_query"],
       }) as any[];
 
       for (const update of updates) {
         offset = update.update_id + 1;
-        const message = update.message ?? update.callback_query?.message;
-        if (String(message?.chat?.id ?? "") !== options.chatId) continue;
+        if (!isAuthorizedUpdate(update, options.chatId, options.userId ?? options.chatId)) continue;
 
         try {
           if (update.callback_query) {
@@ -188,14 +197,14 @@ export async function runBot(options: BotOptions): Promise<void> {
             }
           }
         } catch (error) {
-          const reason = error instanceof Error ? error.message : "unknown error";
+          const reason = safeError(error);
           console.error("Telegram update failed:", reason);
-          await send(`Yolow gagal memproses permintaan: ${reason}`).catch(() => undefined);
+          await send("Yolow gagal memproses permintaan. Periksa log server untuk detail.").catch(() => undefined);
         }
       }
     } catch (error) {
       if (options.signal?.aborted) return;
-      const reason = error instanceof Error ? error.message : "unknown error";
+      const reason = safeError(error);
       console.error("Telegram polling failed:", reason);
       await wait(3_000);
     }

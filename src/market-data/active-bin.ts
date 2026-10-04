@@ -4,6 +4,7 @@ import type { Position } from "../domain/types.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { OorExitEngine } from "../triggers/oor-exit.ts";
 import { listPositions } from "../positions/monitor.ts";
+import { safeError } from "../security.ts";
 
 type Options = {
   connection: Connection;
@@ -152,10 +153,6 @@ export class ActiveBinMonitor {
     this.options.db.prepare("UPDATE positions SET active_bin=?,last_checked=? WHERE pool=? AND state='OPEN'")
       .run(activeBin, Date.now(), pool);
   }
-}
-
-function safeError(error: unknown): string {
-  return error instanceof Error ? error.message : "unknown error";
 }
 
 export function distance(position: Position, activeBin: number): { below: number; above: number } {

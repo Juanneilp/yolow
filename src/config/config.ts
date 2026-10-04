@@ -1,4 +1,6 @@
 import type { Timeframe } from "../domain/types.ts";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { redactSecrets } from "../security.ts";
 
 export type AppConfig = {
   config_version: number;
@@ -51,8 +53,44 @@ function integer(value: unknown, path: string, min = 0): number {
   return result;
 }
 
+function endpoint(value: unknown, path: string, protocol: "https:" | "wss:", hostname?: string): void {
+  if (typeof value !== "string") throw new Error(`${path} must be a URL`);
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error(`${path} must be a valid URL`); }
+  if (url.protocol !== protocol) throw new Error(`${path} must use ${protocol}`);
+  if (hostname && url.hostname !== hostname) throw new Error(`${path} must use the trusted ${hostname} host`);
+  if (url.username || url.password || [...url.searchParams.keys()].some((key) =>
+    /^(?:x[-_])?(?:api[-_]?key|apikey|access[-_]?token|authorization|token|secret|password|key)$/i.test(key))) {
+    throw new Error(`${path} must not contain credentials; keep API keys in .env`);
+  }
+}
+
+function rejectEmbeddedSecrets(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) rejectEmbeddedSecrets(item);
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (/^(?:token|key)$/i.test(key) || /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|bot[_-]?token|secret|private[_-]?key|password|authorization)$/i.test(key)) {
+        throw new Error("Config tidak boleh menyimpan API key atau secret; gunakan .env");
+      }
+      rejectEmbeddedSecrets(item);
+    }
+  } else if (typeof value === "string" && redactSecrets(value) !== value) {
+    throw new Error("Config tidak boleh menyimpan API key atau credential; gunakan .env");
+  }
+}
+
+function outputDirectory(value: string, path: string): void {
+  const resolved = resolve(value);
+  const fromProject = relative(process.cwd(), resolved);
+  if (!fromProject || fromProject === ".." || fromProject.startsWith(`..${sep}`) || isAbsolute(fromProject)) {
+    throw new Error(`${path} must stay inside the Yolow project directory`);
+  }
+}
+
 export function parseConfig(text: string): AppConfig {
   const config = object(JSON.parse(text), "config");
+  rejectEmbeddedSecrets(config);
   if (config.config_version !== 1) throw new Error("config_version must be 1");
   const mode = object(config.mode, "mode");
   const rpc = object(config.rpc, "rpc");
@@ -75,9 +113,8 @@ export function parseConfig(text: string): AppConfig {
   integer(mode.position_poll_interval_sec, "mode.position_poll_interval_sec", 1);
   integer(rpc.oor_fallback_poll_interval_sec, "rpc.oor_fallback_poll_interval_sec", 1);
   for (const key of ["http_base", "ws_base"]) if (typeof rpc[key] !== "string" || !rpc[key]) throw new Error(`rpc.${key} is required`);
-  for (const key of ["http_base", "ws_base"]) {
-    try { new URL(rpc[key]); } catch { throw new Error(`rpc.${key} must be a valid URL`); }
-  }
+  endpoint(rpc.http_base, "rpc.http_base", "https:", "mainnet.helius-rpc.com");
+  endpoint(rpc.ws_base, "rpc.ws_base", "wss:", "mainnet.helius-rpc.com");
   if (typeof candles.primary !== "string" || !candles.primary) throw new Error("candles.primary is required");
   if (!Array.isArray(candles.fallback_chain) || candles.fallback_chain.some((name: unknown) => typeof name !== "string")) throw new Error("candles.fallback_chain must be a string array");
   if (!new Set(["usd", "sol"]).has(candles.price_unit)) throw new Error("candles.price_unit must be usd or sol");
@@ -153,7 +190,9 @@ export function parseConfig(text: string): AppConfig {
   if (trending.min_organic_score > 100) throw new Error("top_trending.min_organic_score cannot exceed 100");
   if (trending.max_token_age_days * 24 < trending.min_token_age_hours) throw new Error("top_trending.max_token_age_days is below minimum age");
   if (swap.enabled && (!config.jupiter?.base_url || !config.jupiter?.tokens_base_url)) throw new Error("Jupiter URLs are required when swaps are enabled");
-  if (typeof config.jupiter?.base_url !== "string" || typeof config.jupiter?.tokens_base_url !== "string") throw new Error("config.jupiter URLs are required");
+  endpoint(config.jupiter?.base_url, "jupiter.base_url", "https:", "api.jup.ag");
+  endpoint(config.jupiter?.tokens_base_url, "jupiter.tokens_base_url", "https:", "api.jup.ag");
+  if (config.jupiter?.price_base_url !== undefined) endpoint(config.jupiter.price_base_url, "jupiter.price_base_url", "https:", "api.jup.ag");
   if (typeof indicator.enabled !== "boolean") throw new Error("indicator_exit.enabled must be boolean");
   if (oor.evaluation !== "live") throw new Error("oor_exit.evaluation must be live");
   integer(execution.max_retries, "execution.max_retries", 1);
@@ -175,14 +214,17 @@ export function parseConfig(text: string): AppConfig {
   integer(history.context_candles, "history.context_candles", 1);
   if (!Array.isArray(history.post_exit_marks_min) || history.post_exit_marks_min.some((value: unknown) => !Number.isInteger(value) || (value as number) <= 0)) throw new Error("history.post_exit_marks_min must be positive integers");
   if (typeof csv.enabled !== "boolean" || typeof csv.dir !== "string" || !csv.dir || typeof csv.file !== "string" || !csv.file) throw new Error("history.csv_export is invalid");
+  outputDirectory(csv.dir, "history.csv_export.dir");
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*\.csv$/i.test(csv.file)) throw new Error("history.csv_export.file must be a plain .csv filename");
   if (typeof backup.enabled !== "boolean" || typeof backup.dir !== "string" || !backup.dir || typeof backup.at_time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(backup.at_time)) throw new Error("history.backup is invalid");
+  outputDirectory(backup.dir, "history.backup.dir");
   integer(backup.keep, "history.backup.keep", 1);
   if (typeof config.logging?.level !== "string") throw new Error("logging.level is required");
   for (const [provider, settings] of Object.entries(object(candles.providers, "candles.providers"))) {
     if (provider === "meteora" || provider === "geckoterminal") {
       const value = object(settings, `candles.providers.${provider}`);
-      if (typeof value.base_url !== "string") throw new Error(`candles.providers.${provider}.base_url is required`);
-      try { new URL(value.base_url); } catch { throw new Error(`candles.providers.${provider}.base_url must be a valid URL`); }
+      endpoint(value.base_url, `candles.providers.${provider}.base_url`, "https:",
+        provider === "meteora" ? "dlmm.datapi.meteora.ag" : "api.geckoterminal.com");
     }
   }
   return config as AppConfig;

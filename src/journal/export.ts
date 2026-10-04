@@ -1,6 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { readJsonResponse, redactSecrets, safeError, telegramApiBase } from "../security.ts";
 
 const fields = ["trade_id", "mode", "position_id", "pool", "pair", "token_mint", "bin_step", "shape_inferred", "tags", "notes",
   "opened_at", "first_seen_at", "entry_source", "initial_sol_capital", "lower_bin", "upper_bin", "entry_active_bin",
@@ -13,7 +15,8 @@ const timeFields = new Set(["opened_at", "first_seen_at", "exit_at", "finalized_
 const postExitOffsets = [15, 60, 240, 1440];
 
 function quoteCsv(value: unknown): string {
-  const text = value == null ? "" : String(value);
+  let text = value == null ? "" : typeof value === "string" ? redactSecrets(value) : String(value);
+  if (typeof value === "string" && /^[\s\u0000-\u001f]*[=+\-@]/.test(text)) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -41,20 +44,27 @@ export function tradesCsv(db: DatabaseSync, timezone: string, offsets = postExit
 
 export async function writeTradesCsv(db: DatabaseSync, path: string, timezone: string, offsets = postExitOffsets): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, tradesCsv(db, timezone, offsets), "utf8");
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, tradesCsv(db, timezone, offsets), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await rename(temporaryPath, path);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function sendTelegramDocument(token: string, chatId: string, filename: string, contents: string): Promise<void> {
   const form = new FormData();
   form.set("chat_id", chatId);
   form.set("document", new Blob([contents], { type: "text/csv" }), filename);
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });
+  const response = await fetch(`${telegramApiBase(token)}/sendDocument`, { method: "POST", body: form, redirect: "error", signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`Telegram sendDocument returned HTTP ${response.status}`);
-  const result = await response.json() as { ok?: boolean; description?: string };
+  const result = await readJsonResponse<{ ok?: boolean; description?: string }>(response, 1_000_000);
   if (!result.ok) throw new Error(`Telegram sendDocument failed: ${result.description ?? "unknown error"}`);
 }
 
 export async function persistTradeCsv(db: DatabaseSync, timezone: string, path: string, offsets = postExitOffsets): Promise<void> {
   try { await writeTradesCsv(db, path, timezone, offsets); }
-  catch (error) { console.error("CSV export failed:", error instanceof Error ? error.message : "unknown error"); }
+  catch (error) { console.error("CSV export failed:", safeError(error)); }
 }

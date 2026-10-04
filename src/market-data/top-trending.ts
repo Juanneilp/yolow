@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readJsonResponse, redactSecrets, safeError } from "../security.ts";
 
 export type TopTrendingConfig = {
   limit: number;
@@ -62,6 +63,7 @@ const NON_TOKEN_MINTS = new Set([
   "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
 ]);
 const PAGE_SIZE = 100;
+const MAX_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 15_000;
 const GMGN_API_BASE_URL = "https://openapi.gmgn.ai";
 
@@ -133,13 +135,13 @@ export function selectTopTrending(
 async function getJson<T>(url: URL, headers: Record<string, string> = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch {
     throw new Error(`Sumber ${url.hostname} gagal diakses atau melewati batas waktu`);
   }
   if (!response.ok) throw new Error(`Sumber ${url.hostname} merespons HTTP ${response.status}`);
   try {
-    return await response.json() as T;
+    return await readJsonResponse<T>(response);
   } catch {
     throw new Error(`Sumber ${url.hostname} mengembalikan JSON yang tidak valid`);
   }
@@ -166,7 +168,7 @@ export async function fetchTopTrending(
   let pageCount = 1;
   const nowMs = Date.now();
 
-  while (page <= pageCount) {
+  while (page <= Math.min(pageCount, MAX_PAGES)) {
     const url = new URL(meteoraUrl);
     url.searchParams.set("page", String(page));
     url.searchParams.set("page_size", String(PAGE_SIZE));
@@ -174,7 +176,7 @@ export async function fetchTopTrending(
     url.searchParams.set("filter_by", `tvl>=${config.min_tvl_usd}`);
 
     const response = await getJson<{ data?: Pool[]; pages?: number }>(url);
-    if (!Array.isArray(response.data) || !Number.isInteger(response.pages) || response.pages! < 0) {
+    if (!Array.isArray(response.data) || response.data.length > PAGE_SIZE || !Number.isInteger(response.pages) || response.pages! < 0) {
       throw new Error("Respons daftar pool Meteora tidak sesuai format");
     }
     pageCount = response.pages;
@@ -244,14 +246,14 @@ export async function fetchTopTrending(
       };
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "unknown error";
+    const reason = safeError(error);
     console.warn("GMGN ATH enrichment unavailable:", reason);
     return results;
   }
 }
 
 function cleanLabel(value: string, maxLength = 32): string {
-  return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+  return redactSecrets(value).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 function escapeHtml(value: string): string {

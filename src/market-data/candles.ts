@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config/config.ts";
 import type { Candle, Timeframe } from "../domain/types.ts";
 import type { DatabaseSync } from "node:sqlite";
+import { readJsonResponse, safeError } from "../security.ts";
 
 const durationMs: Record<Timeframe, number> = { "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000 };
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -15,9 +16,9 @@ function number(value: unknown): number | undefined {
 }
 
 async function json(url: URL, headers: Record<string, string> = {}): Promise<any> {
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+  const response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+  return readJsonResponse(response);
 }
 
 function geckoJson(url: URL): Promise<any> {
@@ -154,7 +155,7 @@ export async function fetchCandleSeries(pool: string, timeframe: Timeframe, conf
     try {
       return await fetchProvider(provider, pool, timeframe, config, now);
     } catch (error) {
-      errors.push(`${provider}: ${error instanceof Error ? error.message : "gagal"}`);
+      errors.push(`${provider}: ${safeError(error)}`);
     }
   }
   throw new Error(`Semua sumber candle gagal: ${errors.join("; ")}`);
@@ -173,7 +174,7 @@ export async function fetchCandleAt(pool: string, timeframe: Timeframe, config: 
       const candle = candles.find((item) => item.time === target);
       if (candle) return candle;
       errors.push(`${provider}: candle ${new Date(target).toISOString()} tidak tersedia`);
-    } catch (error) { errors.push(`${provider}: ${error instanceof Error ? error.message : "gagal"}`); }
+    } catch (error) { errors.push(`${provider}: ${safeError(error)}`); }
   }
   throw new Error(errors.join("; ") || "Tidak ada sumber candle historis yang aktif");
 }
