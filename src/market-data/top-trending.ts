@@ -224,13 +224,14 @@ export async function fetchTopTrending(
   try {
     const response = await getJson<{
       code?: number | string;
-      data?: { rank?: GmgnRankToken[] };
+      data?: { code?: number | string; rank?: GmgnRankToken[]; data?: { rank?: GmgnRankToken[] } };
     }>(gmgnUrl, { "X-APIKEY": gmgnApiKey.trim() });
-    if (String(response.code) !== "0" || !Array.isArray(response.data?.rank)) {
+    const rank = response.data?.data?.rank ?? response.data?.rank;
+    if (String(response.code) !== "0" || !Array.isArray(rank)) {
       throw new Error("GMGN rank response is invalid");
     }
 
-    const athByMint = new Map(response.data.rank.flatMap((token) => {
+    const athByMint = new Map(rank.flatMap((token) => {
       const ath = numeric(token.history_highest_market_cap);
       return token.address && ath !== undefined && ath > 0 ? [[token.address, ath]] : [];
     }));
@@ -295,10 +296,11 @@ export function formatTopTrending(
     const name = escapeHtml(cleanLabel(token.name));
     lines.push(
       `<b>${index + 1}. ${symbol}</b>${symbol === name ? "" : ` · ${name}`}`,
-      `💵 MCap <b>${usdFormat.format(token.marketCapUsd)}</b> · 🕓 ${age} · 👥 ${token.holders.toLocaleString("en-US")}`,
+      `💵 MCap <b>${usdFormat.format(token.marketCapUsd)}</b> 📈 24j ${usdFormat.format(token.volume24h)} · 🕓 ${age} · 👥 ${token.holders.toLocaleString("en-US")}`,
       `ATH MC <b>${token.athMarketCapUsd === undefined ? "N/A" : usdFormat.format(token.athMarketCapUsd)}</b> · turun <b>${token.dropFromAthPercent === undefined ? "N/A" : `${token.dropFromAthPercent.toFixed(1)}%`}</b>`,
-      `🔗 ${escapeHtml(cleanLabel(token.pair, 24))} · 💧 TVL ${usdFormat.format(token.tvlUsd)} · 🌱 Organic ${token.organicScore.toFixed(1)} · 📈 24j ${usdFormat.format(token.volume24h)}`,
-      `CA <code>${escapeHtml(token.mint)}</code> · Pool <code>${escapeHtml(token.poolAddress)}</code>`,
+      `🔗 ${escapeHtml(cleanLabel(token.pair, 24))} · 💧 TVL ${usdFormat.format(token.tvlUsd)} · 🌱 Organic ${token.organicScore.toFixed(1)}`,
+      `CA <code>${escapeHtml(token.mint)}</code>`,
+      `Pool <code>${escapeHtml(token.poolAddress)}</code>`,
       "━━━━━━━━━━━━━━━━━━",
     );
   });

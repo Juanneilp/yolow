@@ -104,8 +104,9 @@
   },
 
   "jupiter": {
-    "base_url": "https://api.jup.ag/swap/v1",
-    "tokens_base_url": "https://api.jup.ag/tokens/v2"
+    "base_url": "https://api.jup.ag/swap/v2",
+    "tokens_base_url": "https://api.jup.ag/tokens/v2",
+    "price_base_url": "https://api.jup.ag/price/v3"
   },
 
   "notify": {

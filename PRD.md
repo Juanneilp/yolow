@@ -278,7 +278,7 @@ For each eligible position when an indicator or OOR trigger fires:
 
 Start after F4 reaches CONFIRMED.
 
-In dry-run, start F5 after recording the virtual close result. Request a Jupiter quote only; do not build, sign, or send a swap transaction.
+In dry-run, start F5 after recording the virtual close result. Request Jupiter Swap V2 build data for its quote; do not sign or send a swap transaction.
 
 - Global switch `swap.enabled`: `true` runs the rules below for all close reasons; `false` records `SWAP_SKIPPED_DISABLED` and leaves close proceeds in the wallet (close-only). Skip quote and swap steps when false.
 1. **Swap only the base tokens received from that close transaction**, capped at actual balance. Never touch other wallet token balances.
@@ -288,7 +288,7 @@ In dry-run, start F5 after recording the virtual close result. Request a Jupiter
    - <$0.50: set `SWAP_SKIPPED_DUST`, report it, and leave the tokens.
 4. Do not impose a maximum price-impact guard. If a route/quote exists and close proceeds meet the dust threshold, attempt the swap. Record quoted and realized price impact and include it in reports.
 5. Slippage starts at `slippage_bps`, increases across retries up to `max_slippage_bps` (proposed values are in `config.example.json`).
-6. Live: build Jupiter Swap API transaction → simulate → sign → pre-compute signature and save PENDING → send → confirm. Fetch a fresh quote for each attempt; retry at most 3 times. Dry-run stores the quote estimate and stops before build/sign/send.
+6. Live: request a fresh Jupiter Swap V2 `/build` response for each attempt, assemble and simulate the versioned transaction, sign, pre-compute the signature and save PENDING, then send and confirm through the configured RPC. Retry at most 3 times. Dry-run stores the quote estimate and never signs or sends.
 7. No route, frozen token, or honeypot: set `SWAP_NO_ROUTE` and alert. Provide `/retryswap` for a manual retry.
 8. Per-position Telegram report: SOL from close + SOL from swap = **total SOL returned**.
 9. Optional `close_empty_token_account` (default false): close empty token accounts to recover rent.
@@ -443,7 +443,7 @@ Dry-run: `MONITORING → TRIGGERED → VIRTUAL_CLOSED → DRY_RUN_QUOTED` or an 
 | Top Trending age and Organic Score | **Jupiter Tokens API V2** | Enrich candidate token mints with `firstPool.createdAt` and `organicScore`; requires `JUPITER_API_KEY` |
 | Top Trending ATH MarketCap | **GMGN AI OpenAPI** `GET /v1/market/rank` | Read `history_highest_market_cap` for matching Solana mints; requires `GMGN_API_KEY`; uses read-only `X-APIKEY`, timestamp, and client ID |
 | Final candle fallback | **On-chain ticks** (in-house) | Aggregate active-bin updates into local candles; convert to USD when `price_unit = usd` |
-| **Token → SOL swaps** | **Jupiter Swap API** (`/quote`, `/swap`, or `/swap-instructions`) | Jupiter developer docs (2026) list `api.jup.ag/swap/v1/*` with an API key; Swap V2 and the `lite-api` host also exist. Confirm host/version/rate limits during implementation |
+| **Token → SOL swaps** | **Jupiter Swap V2 Router** (`/build`) | `api.jup.ag/swap/v2/build` returns quote and instructions; Yolow assembles, simulates, signs, and broadcasts using its own RPC and configured priority-fee cap |
 | SOL/USD price | Jupiter (SOL→USDC quote or Price API) | Used for $0.50 threshold and on-chain-series conversion; confirm final source during implementation |
 | RPC | **Helius Free** (HTTP + WSS) | Approximately 1M credits/month, 10 RPS |
 | Priority fee | Helius `getPriorityFeeEstimate` or fixed | Capped; used for close and swap |
@@ -695,7 +695,7 @@ Main use: adjust `trigger_bins` for pool bin step and set a per-pool timeframe.
 
 - DLMM SDK: https://github.com/MeteoraAg/dlmm-sdk · https://docs.meteora.ag/developer-guides/dlmm/typescript-sdk/getting-started · https://www.npmjs.com/package/@meteora-ag/dlmm (fixed `shouldClaimAndClose` in ≥1.9.3)
 - Helius: https://docs.helius.dev · https://helius.dev/pricing
-- Jupiter Swap API: https://developers.jup.ag/docs/api-reference/swap/v1/swap-instructions
+- Jupiter Swap V2 build API: https://developers.jup.ag/docs/swap/build
 - Jupiter Tokens API V2: https://developers.jup.ag/docs/tokens/token-information
 - GMGN API (Cooperation API, volume-gated): https://docs.gmgn.ai · chart embed `https://www.gmgn.cc/kline/{chain}/{token}`
 - Meteora DLMM Data API: https://docs.meteora.ag/developer-guides/dlmm/api-reference/overview · OHLCV: https://docs.meteora.ag/api-reference/dlmm/pools/ohlcv

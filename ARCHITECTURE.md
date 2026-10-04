@@ -1,130 +1,66 @@
-# Yolow Architecture
+# Yolow Agent Architecture
 
-This document defines the initial folder structure and data flow for PRD v0.9.
-Yolow runs as a single Node.js/TypeScript process, with SQLite as its runtime state store.
+Yolow runs as one Node.js process. `src/main.ts` loads and validates config, creates the Helius connection and SQLite database, starts the agent, then starts the whitelisted Telegram long poller.
 
-## Principles
-
-- Run one agent process; modules are separated by responsibility, not deployed as separate services.
-- Route every trigger through one eligibility check and one single-flight executor per position.
-- Keep defaults and fixed parameters in config. Store per-position ignore flags and the active Telegram-selected timeframe in SQLite.
-- Normalize candle providers to a common candle shape before indicator evaluation.
-- Dry-run never signs or broadcasts transactions.
-
-## Folder structure
-
-```text
-src/
-  main.ts                 # bootstrap, wiring, shutdown
-  config/
-    load.ts               # load config and hot-reload
-    schema.ts             # config validation
-  domain/
-    types.ts              # Position, Candle, Trigger, TxResult
-  positions/
-    monitor.ts            # position discovery and reconciliation
-    ignore.ts             # persistent ignore flags in SQLite
-  market-data/
-    active-bin.ts         # Helius WSS and polling fallback
-    candles.ts            # providers, fallback, normalization, finalization
-    indicators.ts         # RSI, Bollinger Bands, MACD
-    top-trending.ts       # Meteora DLMM candidates, Jupiter filters, and GMGN ATH enrichment
-  triggers/
-    indicator-exit.ts     # indicator rules on candle close
-    oor-exit.ts           # bin distance and confirmation
-    coordinator.ts        # eligibility, deduplication, single-flight
-  execution/
-    close.ts              # simulate, close, confirm, retry
-    swap.ts               # Jupiter quote, swap, retry; record price impact without a guard
-    reconcile.ts          # recover PENDING transactions at startup
-  storage/
-    db.ts                 # SQLite connection
-    migrations.ts         # schema migrations
-    repositories.ts       # position, trigger, and transaction state queries
-  journal/
-    journal.ts            # trade history and snapshots
-    export.ts             # CSV, statistics, backups
-    post-exit.ts          # post-exit price marks
-  telegram/
-    bot.ts                # bot connection and chat whitelist
-    commands.ts           # commands and button callbacks
-    messages.ts           # message formatting, keyboard, WIB time
-  logger.ts               # structured logging and redaction
-
-config.example.json
-.env.example
-data/                     # SQLite; not version-controlled
-exports/                  # CSV; not version-controlled
-backups/                  # SQLite backups; not version-controlled
-```
-
-The folders are responsibility boundaries. Add files when implementation size or testing needs make a narrower module useful.
-
-## Data flow
+## Runtime flow
 
 ```mermaid
 flowchart LR
-  CFG[Config and environment] --> APP[Bootstrap]
-  APP --> DB[(SQLite)]
-  APP --> POS[Position monitor]
+  ENV[Secrets and wallet address] --> MAIN[main.ts]
+  CFG[config.json] --> MAIN
+  MAIN --> DB[(SQLite)]
+  MAIN --> AGENT[YolowAgent]
+  MAIN --> TG[Telegram bot]
+  AGENT --> POS[DLMM position discovery]
   POS --> DB
-  WSS[Helius active-bin WSS] --> OOR[OOR trigger]
-  MPOOLS[Meteora DLMM pools API] --> TREND[Top Trending: filter and rank]
-  TREND --> JTOKENS[Jupiter Tokens API V2: token age and Organic Score]
-  TREND --> GMGN[GMGN market rank: ATH MarketCap by mint]
-  JTOKENS --> TG
-  GMGN --> TG
-  POLL[Candle polling] --> PROVIDER[GMGN / Meteora / GeckoTerminal / onchain ticks]
-  PROVIDER --> NORMALIZE[Normalize, finalize, backfill]
-  NORMALIZE --> IND[Indicator rule]
-  IND --> GATE[Eligibility, ignore check, single-flight]
-  OOR --> GATE
-  GATE --> DRY[Simulate close + quote only]
-  GATE --> LIVE[Live close executor]
-  LIVE --> SWAP{swap.enabled?}
-  SWAP -->|true and quote >= threshold| JUP[Jupiter swap]
-  SWAP -->|false or dust| DONE[Record close result]
-  DRY --> DB
-  LIVE --> DB
-  JUP --> DB
-  DONE --> DB
-  DB --> JOURNAL[Journal and exports]
-  TG[Telegram commands and notifications] <--> DB
+  AGENT --> BIN[WSS active bin plus polling fallback]
+  BIN --> OOR[OOR confirmation engine]
+  AGENT --> CANDLE[Meteora and GeckoTerminal candles]
+  CANDLE --> IND[Final-candle indicator engine]
+  OOR --> EXEC[Single-flight close executor]
+  IND --> EXEC
+  EXEC --> DLMM[Simulate and close via Meteora SDK]
+  DLMM --> SWAP[Jupiter Swap V2 build and optional token-to-SOL swap]
+  EXEC --> DB
+  SWAP --> DB
+  TG <--> DB
+  DB --> JOURNAL[Trade journal and CSV]
 ```
 
-## Flow rules
+## Modules
 
-1. At startup, validate config, open SQLite, recover PENDING transactions, then reconcile wallet positions using `AGENT_WALLET_PUBKEY`.
-2. Position and active-bin monitors run continuously. Subscribe to active-bin updates once per pool and reuse each pool feed for all its positions.
-3. The candle engine selects the active provider, falls back and backfills when needed, then sends finalized candles to the indicator engine. OOR does not depend on candles.
-4. Indicator and OOR triggers enter the coordinator. Before requesting a close, it checks wallet ownership, open status, position age when applicable, ignore state, and deduplication.
-5. Before broadcasting a live close, re-check on-chain state and the ignore flag. Save the transaction signature and PENDING state before broadcast.
-6. After a confirmed close, record the result. If `swap.enabled` is false, finalize as close-only. If true, attempt to swap close proceeds when they exceed the dust threshold, without rejecting a quote because of price impact. Record price impact for the journal and notifications. In dry-run, save a quote estimate without building or sending a swap transaction.
-7. Persist every important state change in SQLite and send the corresponding Telegram notification.
-8. `/ignore` and `/unignore` update SQLite immediately and persist across restarts. `/tf` updates the active timeframe, starts a fresh backfill, and persists the selected value in SQLite.
-9. `TopTrendingService` fetches paginated DLMM pools from Meteora, applies all configured filters, enriches candidate tokens with Jupiter token data and GMGN ATH MarketCap, deduplicates by mint, then returns the ranked list to Telegram. Missing GMGN ATH data is displayed as unavailable; this feature does not call the execution pipeline.
-
-## State ownership
-
-| State | Source of truth |
+| Module | Responsibility |
 |---|---|
-| Parameters and providers | Validated `config.json` |
-| API keys and bot token | `.env` |
-| Monitored wallet | `AGENT_WALLET_PUBKEY` |
-| Live signer | Keypair file outside the repository; `.env` stores only its path |
-| Positions, ignore flags, Telegram-selected timeframe, transactions, candle audit, and journal | SQLite |
+| `src/main.ts` | Config and environment validation, Helius connection, SQLite, signer loading, graceful shutdown |
+| `src/config/config.ts` | Startup schema checks for required settings and bounds |
+| `src/positions/monitor.ts` | Discover/reconcile Meteora positions and persist ignore state |
+| `src/market-data/active-bin.ts` | One active-bin subscription per pool, polling fallback, stale-feed suppression |
+| `src/triggers/oor-exit.ts` | Per-position lower/upper range distance and confirmation timer |
+| `src/market-data/candles.ts` | Normalize, gap-fill and finalize candles; build 15m Meteora candles from 5m data |
+| `src/market-data/indicators.ts` | Wilder RSI(2), Bollinger upper band and MACD histogram exit rule |
+| `src/execution/executor.ts` | Position close simulation/live execution, Jupiter swap, transaction journal, retry and restart reconciliation |
+| `src/storage/db.ts` | SQLite tables, indexes and journal views |
+| `src/journal/export.ts` | WIB-formatted trade CSV and Telegram document upload |
+| `src/telegram/commands.ts` | Position controls, timeframe, journal commands and two-step `/golive` |
+| `src/market-data/top-trending.ts` | Read-only Meteora DLMM token list, Jupiter enrichment and optional GMGN ATH field |
 
-Never write a private key, seed phrase, or keypair contents to logs, the database, Telegram, or config files.
+## Execution and state rules
 
-## Transaction boundaries
+- All close paths pass through one in-flight guard per position. Ignore state and position state are checked again before broadcast.
+- A live close re-fetches the Meteora position, checks wallet ownership, builds a 100% remove-liquidity transaction, simulates it, saves its signature as `PENDING`, then broadcasts and confirms it.
+- An ambiguous broadcast is stored as `UNKNOWN`; the agent does not resubmit that transaction. Startup and position discovery reconcile pending signatures and recover confirmed closes/swaps when the chain state is conclusive.
+- A confirmed close swaps only the token amount credited by its own transaction, capped by that amount and the wallet's current token balance. Swaps use SOL output only, progressive slippage, a USD dust threshold and no price-impact veto.
+- `/golive` validates the external keypair before showing a confirmation button. The callback validates the keypair again before changing SQLite mode to live.
+- Position, trigger, transaction, candle, snapshot and journal timestamps are UTC epoch milliseconds. Telegram and CSV times use the configured time zone, defaulting to WIB (`Asia/Jakarta`).
 
-- `dry_run = true`: build and simulate as specified by the PRD, but do not sign or broadcast; label journal results as virtual.
-- `swap.enabled = false`: continue closing positions, skip automatic swaps with status `SWAP_SKIPPED_DISABLED`.
-- There is no maximum price-impact guard for swaps. Record and display quoted and realized impact so execution risk remains visible.
-- An ignored position fails eligibility before execution. A transaction already broadcast cannot be cancelled by changing ignore state.
-- Only one close may be active per position. Only one active-bin feed is needed per pool.
-- Store all timestamps as UTC epoch milliseconds and format them as WIB when displayed.
+## Current scope and known gaps
 
-## Next implementation decisions
+- Candle retrieval currently supports Meteora DLMM and GeckoTerminal. GMGN candles and `onchain_ticks` are placeholders; the fallback chain skips them. Without a supported candle response, indicator exits pause while active-bin OOR checks continue.
+- The configured candle unit is attached to normalized data, but Meteora source prices still need comparison against the chosen chart before live indicator exits are relied on.
+- The journal records first-seen SOL value estimates, close/swap balance deltas, candle context, snapshots, basic excursion statistics, and scheduled post-exit marks. On-chain open time, fees/rewards claimed, manual liquidity changes, accurate token USD PnL, and full trade-shape inference are not yet sourced.
+- Invalid config fails startup. Config hot reload is not implemented; restart is required for config changes.
+- Optional `swap.close_empty_token_account` is present in config but rent recovery is not implemented.
 
-Verify each provider candle format and API limits, pin the Meteora SDK version, and validate transaction reconciliation before enabling the relevant module in live mode. Provider changes must not alter the internal candle format.
+## Secrets and wallet
+
+`.env` contains API keys, Telegram credentials, the monitored public key, and only a path to the live keypair. The keypair file must be outside the repository with restrictive permissions. Never write key material to SQLite, Telegram, or logs.

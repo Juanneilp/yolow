@@ -45,7 +45,7 @@ Mode      DRY-RUN
 Positions 4 active · 1 ignored
 ```
 
-Show only an abbreviated public key. Never display a secret or keypair path.
+Show only an abbreviated public key. Never display a secret or keypair path. `/start` shows this summary with persistent quick-access buttons. Tapping `🏠 Menu` opens the summary with the inline feature menu.
 
 The inline menu uses Yolow features:
 
@@ -54,13 +54,14 @@ The inline menu uses Yolow features:
 | 1 | Status · Positions |
 | 2 | History · Statistics |
 | 3 | Timeframe · Export |
-| 4 | Top Trending |
+| 4 | Top Trending · Configuration |
+| 5 | Advanced commands |
 
-The Timeframe button opens the same choices as `/tf <5m|15m|30m|1h>`. Display the active timeframe; a timeframe selected in Telegram persists after restart. RSI, BB, and MACD parameters are not editable through the menu.
+The persistent keyboard uses `🏠 Menu` and `🔥 Top Trending`. The Timeframe button opens the same choices as `/tf <5m|15m|30m|1h>`. Display the active timeframe; a timeframe selected in Telegram persists after restart. RSI, BB, and MACD parameters are not editable through the menu. Advanced commands list the argument-based journal and position commands.
 
 ### Top Trending results
 
-The persistent Telegram keyboard has **Menu** and **Top Trending** buttons. **Menu** and `/menu` show the available command list; **Top Trending** and `/toptrending` show 10 qualifying tokens by default. Use Telegram HTML bold/monospace for hierarchy, a compact filter summary, and a divider between token cards. Each card shows symbol/name, MarketCap, age, holders, SOL-quoted DLMM pair, TVL, Jupiter Organic Score, and 24-hour volume. Show the full mint and pool address as separate `<code>` entities so users can tap to copy the complete values. Only SOL-quoted pools are listed; do not show `/USDC` pairs. Keep actual bot copy in Indonesian. This is a read-only discovery view; do not show buy, swap, or open-position actions.
+The persistent Telegram keyboard has **🏠 Menu** and **🔥 Top Trending** buttons. **Menu** and `/menu` show the wallet summary and inline feature grid; **Top Trending** and `/toptrending` show 10 qualifying tokens by default. Use Telegram HTML bold/monospace for hierarchy, a compact filter summary, and a divider between token cards. Each card shows symbol/name, MarketCap, age, holders, SOL-quoted DLMM pair, TVL, Jupiter Organic Score, and 24-hour volume. Show the full mint and pool address as separate `<code>` entities so users can tap to copy the complete values. Only SOL-quoted pools are listed; do not show `/USDC` pairs. Keep actual bot copy in Indonesian. This is a read-only discovery view; do not show buy, swap, or open-position actions.
 
 Example result block:
 

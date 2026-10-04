@@ -1,47 +1,56 @@
-# Yolow Agent — Phase 1
+# Yolow Agent
 
-Phase 1 implements the read-only Telegram **Top Trending** feature. Candidate pools come only from Meteora DLMM. Jupiter Tokens API V2 enriches candidate mints with first-pool time and Organic Score. GMGN AI supplies ATH MarketCap data. The bot does not buy tokens, open LP positions, or submit transactions.
-
-## Requirements
-
-- Node.js 22.21 or later
-- A Telegram bot token and the allowed Telegram chat ID
-- A Jupiter API key
-- A GMGN AI API key to show ATH MarketCap and drawdown (optional until configured)
+Yolow monitors every Meteora DLMM position owned by one Solana wallet. It tracks active bins and finalized candles, sends alerts to one whitelisted Telegram chat, and can simulate or submit a full position close followed by a token-to-SOL Jupiter swap. The default mode is `dry_run: true`.
 
 ## Setup
 
-Open PowerShell in the project folder (`D:\Development\yolow`). Run these copy commands once. They leave existing local files unchanged:
+Requirements: Node.js 22.21 or newer, a Telegram bot, a Helius API key, a Jupiter API key, and the public key of the monitored wallet.
 
-```powershell
-if (-not (Test-Path .\config.json)) { Copy-Item .\config.example.json .\config.json }
-if (-not (Test-Path .\.env)) { Copy-Item .\.env.example .\.env }
+```sh
+cp config.example.json config.json
+cp .env.example .env
+npm install
 ```
 
-Edit `.env` and fill in:
+Set these values in `.env`:
 
 ```text
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_allowed_chat_id
-JUPITER_API_KEY=your_jupiter_api_key
-GMGN_API_KEY=your_gmgn_api_key
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+HELIUS_API_KEY=...
+AGENT_WALLET_PUBKEY=...
+JUPITER_API_KEY=...
 ```
 
-Keep `.env` private; it is excluded from Git. Do not send these secrets in Telegram or commit them. Phase 1 does not need a Solana wallet or private key.
+`GMGN_API_KEY` is optional for Top Trending ATH data. Live signing also requires `AGENT_KEYPAIR_PATH`; point it to a Solana JSON keypair stored outside this repository with file permissions set to `600`. The agent checks that the keypair matches `AGENT_WALLET_PUBKEY`. Never put the secret key in `.env`, `config.json`, or Telegram.
 
-`config.json` is a local copy of `config.example.json`. The Top Trending defaults are already present. To change the result count or thresholds, edit the `top_trending` block in `config.json`; restart the bot for changes to take effect. Keep `config.example.json` as the clean template.
+`DB_PATH` and `CONFIG_PATH` are optional. They default to `./data/yolow.db` and `./config.json`.
 
-Run the tests, then start the bot:
+## Run
 
-```powershell
-npm.cmd test
-npm.cmd start
+```sh
+npm start
 ```
 
-No dependency installation is required for this phase. To stop the bot, press `Ctrl+C` in the PowerShell window.
+Run under PM2:
 
-In the allowed Telegram chat, send `/start` to show the persistent **Menu** and **Top Trending** buttons. Tap **Menu** or send `/menu` to see available commands; tap **Top Trending** or send `/toptrending` to view the results.
+```sh
+pm2 start ecosystem.config.cjs
+pm2 logs yolow
+pm2 restart yolow
+pm2 stop yolow
+```
 
-The initial settings are 10 results, MarketCap ≥ $500,000, first pool age from 6 hours through 60 days, holders ≥ 1,000, DLMM pool TVL ≥ $10,000, and Jupiter Organic Score ≥ 70. Only SOL-quoted DLMM pools are considered; USDC-quoted pools are excluded. Results are ranked by 24-hour DLMM pool volume. With `GMGN_API_KEY` configured, each token also shows its GMGN ATH MarketCap and the percentage below that ATH; if GMGN has no matching ATH data, it shows `N/A`. The GMGN key is sent only in the request header and is not needed to start the bot.
+In Telegram, send `/start` and tap **Menu**. `/status` and `/positions` show the current agent state. `/ignore <position_id>` and `/unignore <position_id>` persist exclusions; `/tf <5m|15m|30m|1h>` selects the indicator timeframe. The menu also provides journal, export, and Top Trending commands.
 
-The ATH lookup uses GMGN's first 100 Solana tokens ranked by 24-hour volume; matching is by mint address. Tokens outside GMGN's returned rank list show `N/A` rather than using an OHLCV-derived estimate.
+Open **⚙️ Konfigurasi** or send `/config` to browse settings. Change a validated value with `/config set <path> <value>`, for example `/config set oor_exit.below.trigger_bins 24` or `/config set indicator_exit.enabled false`. Config changes are atomically saved and audited. Values that need process reinitialization say so in the reply; API secrets and `mode.dry_run` cannot be changed through Telegram.
+
+While `dry_run` is enabled, Yolow simulates Meteora close transactions and requests Jupiter Swap V2 build quotes without signing or sending. To enable live transactions, configure the external keypair and use `/golive`, then press its confirmation button. Every live close and swap is simulated before broadcast; uncertain broadcast status is recorded and never retried automatically.
+
+## Current provider coverage
+
+Meteora DLMM and GeckoTerminal candle retrieval are implemented. GMGN candle data and `onchain_ticks` are not integrated, so those configured entries are skipped and the fallback chain continues. If no supported provider returns finalized candles, indicator exits pause and OOR monitoring continues. Meteora candle price units still need to be compared with the chosen chart source before relying on live indicator exits; keep the default dry-run mode during that review.
+
+GeckoTerminal requests are serialized to stay near its public API rate limit. The free endpoint is cached and rate limited, so it is intended as a fallback. Set per-pool `indicator_exit.timeframe` or `oor_exit` overrides in `pool_overrides` when a pool needs different settings; `/tf` changes the default timeframe for pools without an override.
+
+Top Trending remains read-only. GMGN ATH MarketCap is shown as `N/A` when the API key or matching token data is unavailable.

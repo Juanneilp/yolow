@@ -116,7 +116,8 @@ test("renders a Telegram-friendly card and escapes token metadata", () => {
   assert.match(text, /&lt;TAG&gt;/);
   assert.match(text, /&lt;i&gt;not markup&lt;\/i&gt;/);
   assert.doesNotMatch(text, /<i>not markup<\/i>/);
-  assert.ok(text.includes(`CA <code>${mint}</code> · Pool <code>${pool}</code>`));
+  assert.ok(text.includes(`💵 MCap <b>$700.0K</b> 📈 24j $50.0K`));
+  assert.ok(text.includes(`CA <code>${mint}</code>\nPool <code>${pool}</code>`));
 });
 
 test("loads Meteora candidates and enriches them with Jupiter and GMGN data", async () => {
@@ -138,7 +139,7 @@ test("loads Meteora candidates and enriches them with Jupiter and GMGN data", as
     assert.equal(new Headers(init?.headers).get("x-apikey"), "gmgn-test-key");
     return new Response(JSON.stringify({
       code: 0,
-      data: { rank: [{ address: "candidate", history_highest_market_cap: "1000000" }] },
+      data: { code: 0, data: { rank: [{ address: "candidate", history_highest_market_cap: "1000000" }] }, message: "", reason: "" },
     }), { status: 200 });
   }) as typeof fetch;
 

@@ -6,7 +6,13 @@
     "node": ">=22.21.0"
   },
   "scripts": {
-    "start": "node --env-file=.env --experimental-strip-types src/main.ts",
-    "test": "node --experimental-strip-types --test test/top-trending.test.ts test/bot.test.ts"
+    "start": "node --env-file=.env --experimental-transform-types src/main.ts",
+    "test": "node --experimental-transform-types --test test/top-trending.test.ts test/bot.test.ts test/agent-logic.test.ts test/config.test.ts"
+  },
+  "dependencies": {
+    "@meteora-ag/dlmm": "1.9.8",
+    "@solana/web3.js": "1.98.4",
+    "bn.js": "5.2.2",
+    "bs58": "4.0.1"
   }
 }
