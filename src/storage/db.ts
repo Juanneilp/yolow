@@ -20,6 +20,7 @@ export function openDatabase(path: string): DatabaseSync {
     );
     CREATE TABLE IF NOT EXISTS positions (
       id TEXT PRIMARY KEY, pool TEXT NOT NULL, token_mint TEXT NOT NULL, quote_mint TEXT NOT NULL,
+      bin_step INTEGER, base_fee_percent REAL,
       lower_bin_id INTEGER NOT NULL, upper_bin_id INTEGER NOT NULL, first_seen_at INTEGER NOT NULL,
       ignored INTEGER NOT NULL DEFAULT 0, ignore_updated_at INTEGER, state TEXT NOT NULL DEFAULT 'OPEN',
       active_bin INTEGER, last_checked INTEGER NOT NULL, closed_at INTEGER
@@ -111,6 +112,12 @@ export function openDatabase(path: string): DatabaseSync {
       SELECT offset_min, count(*) AS marks, avg(percent_vs_exit) AS avg_percent_vs_exit
       FROM post_exit_marks WHERE status = 'RECORDED' GROUP BY offset_min;
   `);
+  if (!(db.prepare("PRAGMA table_info(positions)").all() as Array<{ name: string }>).some((column) => column.name === "bin_step")) {
+    db.exec("ALTER TABLE positions ADD COLUMN bin_step INTEGER");
+  }
+  if (!(db.prepare("PRAGMA table_info(positions)").all() as Array<{ name: string }>).some((column) => column.name === "base_fee_percent")) {
+    db.exec("ALTER TABLE positions ADD COLUMN base_fee_percent REAL");
+  }
   return db;
 }
 

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PublicKey } from "@solana/web3.js";
+import DLMM from "../src/meteora.ts";
 import { parseConfig } from "../src/config/config.ts";
 import { applyConfigInPlace, configUpdateNeedsRestart, prepareConfigUpdate, writeConfigAtomically } from "../src/config/config-store.ts";
 import { createCommandHandler } from "../src/telegram/commands.ts";
+import { binStepLabel } from "../src/telegram/presentation.ts";
 import { openDatabase } from "../src/storage/db.ts";
 
 async function exampleConfig() {
@@ -102,4 +105,82 @@ test("Telegram /config set persists, hot-applies, and audits a validated setting
     db.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Telegram /positions explains range distance and labels paused exit signals clearly", async () => {
+  const config = await exampleConfig();
+  const db = openDatabase(":memory:");
+  const id = "AiEkQGg5thkPRXG4VPSyfoKCXJDbPi8P9fKMFuutuyn1";
+  const pool = "4s2bzyM1CStvWCUC1r1q8Maoj6UmkqnBqnwBEFtDtpko";
+  db.prepare(`INSERT INTO positions
+    (id,pool,token_mint,quote_mint,bin_step,base_fee_percent,lower_bin_id,upper_bin_id,first_seen_at,state,active_bin,last_checked)
+    VALUES(?,?,?,?,?,?,?,?,?,'OPEN',?,?)`)
+    .run(id, pool, "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump", "So11111111111111111111111111111111111111112", 25, 2, -483, -321, Date.UTC(2026, 9, 4), -358, Date.now());
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.equal(url.pathname, "/tokens/v2/search");
+    assert.equal(url.searchParams.get("query"), "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump");
+    assert.equal(new Headers(init?.headers).get("x-api-key"), "test-jupiter-key");
+    return new Response(JSON.stringify([{ id: "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump", symbol: "BONK", name: "Bonk" }]), { status: 200 });
+  }) as typeof fetch;
+  const handler = createCommandHandler({
+    agent: { executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+    db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
+    telegramToken: "test", chatId: "test", config, jupiterApiKey: "test-jupiter-key",
+  });
+
+  try {
+    const initial = await handler.onCommand("/positions", []);
+    assert.match(initial?.text ?? "", /📍 POSISI TERBUKA · 1/);
+    assert.match(initial?.text ?? "", /🪙 Token BONK · Bonk/);
+    assert.match(initial?.text ?? "", /🧭 Bin step 25 · Fee 2%/);
+    assert.match(initial?.text ?? "", /Dalam range · 125 bin dari batas bawah · 37 bin dari batas atas/);
+    assert.match(initial?.text ?? "", /Sinyal terakhir: Belum ada sinyal exit/);
+    assert.equal(initial?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "⏸ Abaikan exit");
+
+    const menuPositions = await handler.onCallback("cmd:/positions");
+    assert.match(menuPositions?.text ?? "", /📍 POSISI TERBUKA · 1/);
+    assert.match((await handler.onCallback("cmd:/ignore"))?.text ?? "", /tekan ⏸ Abaikan exit/);
+
+    const ignored = await handler.onCommand("/ignore", [id]);
+    assert.match(ignored?.text ?? "", /Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi/);
+    const paused = await handler.onCommand("/positions", []);
+    assert.match(paused?.text ?? "", /⏸ SINYAL EXIT DIABAIKAN/);
+    assert.equal(paused?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "▶️ Aktifkan exit");
+  } finally {
+    globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
+
+test("database adds pool metadata to an existing positions table", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "yolow-bin-step-migration-"));
+  const path = join(directory, "legacy.db");
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE positions (
+    id TEXT PRIMARY KEY, pool TEXT NOT NULL, token_mint TEXT NOT NULL, quote_mint TEXT NOT NULL,
+    lower_bin_id INTEGER NOT NULL, upper_bin_id INTEGER NOT NULL, first_seen_at INTEGER NOT NULL,
+    ignored INTEGER NOT NULL DEFAULT 0, ignore_updated_at INTEGER, state TEXT NOT NULL DEFAULT 'OPEN',
+    active_bin INTEGER, last_checked INTEGER NOT NULL, closed_at INTEGER
+  )`);
+  legacy.close();
+  try {
+    const db = openDatabase(path);
+    try {
+      const columns = db.prepare("PRAGMA table_info(positions)").all() as Array<{ name: string }>;
+      assert.ok(columns.some((column) => column.name === "bin_step"));
+      assert.ok(columns.some((column) => column.name === "base_fee_percent"));
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Meteora bin step and base fee are separate values", () => {
+  const fee = DLMM.calculateFeeInfo(20_000, 100, 0).baseFeeRatePercentage;
+  assert.equal(fee.toString(), "2");
+  assert.equal(binStepLabel(100, Number(fee.toString())), "100 · Fee 2%");
 });

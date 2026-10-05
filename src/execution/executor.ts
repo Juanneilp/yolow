@@ -16,6 +16,7 @@ import { discoverPositions, listPositions } from "../positions/monitor.ts";
 import { persistTradeCsv } from "../journal/export.ts";
 import { join } from "node:path";
 import { readJsonResponse, safeError } from "../security.ts";
+import { notificationCard, triggerReasonLabel } from "../telegram/presentation.ts";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const JUPITER_SWAP_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
@@ -283,7 +284,11 @@ export class CloseExecutor {
       }
     }
     await this.exportCsv();
-    await this.options.notify(`🔄 Journal posisi ${position.id} dipulihkan setelah restart dari transaksi on-chain.`);
+    await this.options.notify(notificationCard("🔄 JOURNAL POSISI DIPULIHKAN", [
+      `Posisi ${position.id}`,
+      "Yolow menemukan transaksi close terkonfirmasi di blockchain dan memulihkan catatan trade.",
+      `Signature https://solscan.io/tx/${result.signature}`,
+    ]));
   }
 
   private recoveredTrigger(tradeId: number, signature: string): Trigger | undefined {
@@ -329,7 +334,12 @@ export class CloseExecutor {
       const reason = safeError(error);
       if (error instanceof SkipClose) {
         this.markTrigger(trigger, error.outcome);
-        await this.options.notify(`ℹ️ CLOSE DILEWATI\nSinyal exit: ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}\nPosisi ${trigger.positionId}\n${reason}`);
+        await this.options.notify(notificationCard("ℹ️ CLOSE DILEWATI", [
+          `Posisi ${trigger.positionId}`,
+          `Alasan ${triggerReasonLabel(trigger.reason)}`,
+          `🕒 Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
+          reason,
+        ]));
         return 0;
       }
       const failures = Number(getMeta(this.options.db, "close_failures") ?? 0) + 1;
@@ -337,7 +347,19 @@ export class CloseExecutor {
       setMeta(this.options.db, "close_failures_at", String(Date.now()));
       this.markTrigger(trigger, "FAILED");
       console.error("Close pipeline failed:", reason);
-      await this.options.notify(`${failures >= 3 ? "🚨 CIRCUIT BREAKER CLOSE AKTIF" : "🔴 CLOSE FAILED"}\nSinyal exit: ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}\nPosisi ${trigger.positionId}\nAlasan ${trigger.reason}\nPercobaan gagal ${failures}/3\n${reason}`);
+      await this.options.notify(notificationCard(
+        failures >= 3 ? "🚨 CLOSE DIJEDA SEMENTARA" : "🔴 CLOSE GAGAL",
+        [
+          `Posisi ${trigger.positionId}`,
+          `Alasan ${triggerReasonLabel(trigger.reason)}`,
+          `Percobaan gagal ${failures}/3`,
+          `Detail ${reason}`,
+          failures >= 3
+            ? "Tindakan: close dijeda 10 menit, lalu Yolow mencoba lagi otomatis."
+            : "Tindakan: Yolow mencoba kembali otomatis.",
+          `🕒 Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
+        ],
+      ));
       return failures >= 3 ? 600_000 : 60_000;
     } finally { this.inFlight.delete(trigger.positionId); }
   }
@@ -357,7 +379,10 @@ export class CloseExecutor {
       failures = 0;
       setMeta(this.options.db, "close_failures", "0");
       setMeta(this.options.db, "close_failures_at", "0");
-      await this.options.notify("✅ Circuit breaker close pulih setelah jeda 10 menit; agent melanjutkan pemantauan.");
+      await this.options.notify(notificationCard("✅ PEMANTAUAN CLOSE DILANJUTKAN", [
+        "Jeda setelah kegagalan berakhir. Yolow kembali memproses sinyal exit.",
+        `🕒 ${formatExitTimestamp(Date.now(), this.options.config.timezone)}`,
+      ]));
     }
     if (failures >= 3) {
       this.markTrigger(trigger, "CIRCUIT_BREAKER");
@@ -371,7 +396,15 @@ export class CloseExecutor {
     let currentPosition = await pool.getPosition(new PublicKey(position.id));
     if (!currentPosition.positionData.owner.equals(this.options.wallet)) throw new Error("Posisi tidak dimiliki wallet agent");
     const dryRun = this.isDryRun();
-    await this.options.notify(`${dryRun ? "🟡 SIMULASI CLOSE" : "🔴 CLOSE DIMULAI"}\nSinyal exit: ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}\nPosisi ${position.id}\nPool ${position.pool}\nAlasan ${trigger.reason}`);
+    await this.options.notify(notificationCard(
+      dryRun ? "🟡 SIMULASI CLOSE DIMULAI" : "🔴 CLOSE DIMULAI",
+      [
+        `Posisi ${position.id}`,
+        `Pool ${position.pool}`,
+        `Alasan ${triggerReasonLabel(trigger.reason)}`,
+        `🕒 Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
+      ],
+    ));
     let sent: string[] = [];
     let tokenReceived = 0n;
     let solReceivedLamports = 0n;
@@ -469,15 +502,29 @@ export class CloseExecutor {
       if (tokenReceived > 0n) await this.finishSwap(position, tokenReceived, true, sent.at(-1));
       else this.options.db.prepare("UPDATE trade_history SET swap_status='SKIPPED_NO_TOKEN',finalized_at=? WHERE position_id=?").run(Date.now(), position.id);
       await this.exportCsv();
-      await this.options.notify(`🟡 DRY-RUN CLOSE selesai\nSinyal exit: ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}\nSimulasi selesai: ${formatExitTimestamp(Date.now(), this.options.config.timezone)}\nPosisi ${position.id}\nTidak ada transaksi yang ditandatangani atau dikirim.`);
+      await this.options.notify(notificationCard("✅ SIMULASI CLOSE SELESAI", [
+        `Posisi ${position.id}`,
+        `Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
+        `Simulasi selesai ${formatExitTimestamp(Date.now(), this.options.config.timezone)}`,
+        "Tidak ada transaksi yang ditandatangani atau dikirim ke blockchain.",
+      ]));
       return 0;
     }
-    await this.options.notify(`✅ CLOSE TERKONFIRMASI\nSinyal exit: ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}\nClose selesai: ${formatExitTimestamp(Date.now(), this.options.config.timezone)}\nPosisi ${position.id}\n${sent.map((signature) => `https://solscan.io/tx/${signature}`).join("\n")}`);
+    await this.options.notify(notificationCard("✅ CLOSE TERKONFIRMASI", [
+      `Posisi ${position.id}`,
+      `Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
+      `Close selesai ${formatExitTimestamp(Date.now(), this.options.config.timezone)}`,
+      ...sent.map((signature) => `🔗 https://solscan.io/tx/${signature}`),
+    ]));
     if (this.options.config.swap.enabled && tokenReceived > 0n) await this.finishSwap(position, tokenReceived, false, sent.at(-1));
     else {
       this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
         .run(this.options.config.swap.enabled ? "SKIPPED_NO_TOKEN" : "SKIPPED_DISABLED", Date.now(), position.id);
-      if (this.options.config.swap.enabled) await this.options.notify(`ℹ️ Tidak ada token ${position.tokenMint} yang diterima dari close; swap dilewati.`);
+      if (this.options.config.swap.enabled) await this.options.notify(notificationCard("ℹ️ SWAP DILEWATI", [
+        `Posisi ${position.id}`,
+        `Token ${position.tokenMint}`,
+        "Tidak ada token yang diterima dari close untuk ditukar ke SOL.",
+      ]));
       await this.exportCsv();
     }
     return 0;
@@ -736,7 +783,11 @@ export class CloseExecutor {
         this.options.db.prepare("UPDATE trade_history SET swap_status='SKIPPED_DUST',remaining_dust_usd=?,finalized_at=? WHERE position_id=?")
           .run(estimatedUsd, Date.now(), position.id);
         this.updatePnl(position.id);
-        await this.options.notify(`🟡 SWAP DUST\n${position.id}\nEstimasi $${estimatedUsd.toFixed(2)} di bawah batas $${this.options.config.swap.min_value_usd}.`);
+        await this.options.notify(notificationCard("🟡 SWAP DILEWATI · NILAI DUST", [
+          `Posisi ${position.id}`,
+          `Estimasi nilai $${estimatedUsd.toFixed(2)} · batas swap $${this.options.config.swap.min_value_usd.toFixed(2)}`,
+          "Token tetap berada di wallet karena nilainya di bawah batas minimum swap.",
+        ]));
         return;
       }
       if (dryRun) {
@@ -744,7 +795,12 @@ export class CloseExecutor {
         this.options.db.prepare("UPDATE trade_history SET swap_status='DRY_RUN_QUOTED',swap_sol_received=?,total_sol_returned=COALESCE(sol_received,0)+?,finalized_at=? WHERE position_id=?")
           .run(Number(build.outAmount) / 1e9, Number(build.outAmount) / 1e9, Date.now(), position.id);
         this.updatePnl(position.id);
-        await this.options.notify(`🟡 SWAP QUOTE\n${position.id}\nPerkiraan ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · $${estimatedUsd.toFixed(2)}\nPrice impact ${priceImpact.toFixed(2)}%`);
+        await this.options.notify(notificationCard("🟡 SIMULASI SWAP", [
+          `Posisi ${position.id}`,
+          `Perkiraan diterima ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · sekitar $${estimatedUsd.toFixed(2)}`,
+          `Dampak harga ${priceImpact.toFixed(2)}%`,
+          "Mode DRY-RUN: quote diperiksa, transaksi tidak dikirim.",
+        ]));
         return;
       }
       if (!this.signer) throw new Error("Live mode memerlukan signer yang valid");
@@ -842,13 +898,22 @@ export class CloseExecutor {
         SELECT trade_id,?,'SWAP_CONFIRMED',? FROM trade_history WHERE position_id=?`)
         .run(Date.now(), JSON.stringify({ signature, receivedLamports: deltas.solDelta.toString() }), position.id);
       this.updatePnl(position.id);
-      await this.options.notify(`✅ SWAP TERKONFIRMASI\n${position.id}\n${actualSol === null ? "SOL aktual belum dapat dibaca" : `Diterima ${actualSol.toFixed(6)} SOL`} · quote ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · impact ${priceImpact.toFixed(2)}%\nhttps://solscan.io/tx/${signature}`);
+      await this.options.notify(notificationCard("✅ SWAP TERKONFIRMASI", [
+        `Posisi ${position.id}`,
+        actualSol === null ? "SOL aktual belum dapat dibaca." : `Diterima ${actualSol.toFixed(6)} SOL`,
+        `Perkiraan quote ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · dampak harga ${priceImpact.toFixed(2)}%`,
+        `🔗 https://solscan.io/tx/${signature}`,
+      ]));
       return;
     }
     saveSwap("NO_ROUTE", { error: lastError });
     this.options.db.prepare("UPDATE trade_history SET swap_status='NO_ROUTE',finalized_at=? WHERE position_id=?").run(Date.now(), position.id);
     this.updatePnl(position.id);
-    await this.options.notify(`🔴 SWAP GAGAL\n${position.id}\n${lastError}\nGunakan /retryswap ${position.id} setelah memeriksa rute.`);
+    await this.options.notify(notificationCard("🔴 SWAP GAGAL", [
+      `Posisi ${position.id}`,
+      `Detail ${lastError}`,
+      `Tindakan: periksa rute, lalu gunakan /retryswap ${position.id} untuk mencoba lagi.`,
+    ]));
   }
 
   private async finishSwap(position: Position, amount: bigint, dryRun: boolean, closeSignature?: string): Promise<void> {
@@ -861,7 +926,16 @@ export class CloseExecutor {
       this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
         .run(status, Date.now(), position.id);
       this.updatePnl(position.id);
-      await this.options.notify(`${status === "UNKNOWN" ? "🚨 SWAP STATUS UNKNOWN" : "🔴 SWAP GAGAL"}\n${position.id}\n${reason}${status === "UNKNOWN" ? "\nPeriksa signature di journal sebelum tindakan manual." : `\nGunakan /retryswap ${position.id} untuk mencoba lagi.`}`);
+      await this.options.notify(notificationCard(
+        status === "UNKNOWN" ? "🚨 STATUS SWAP BELUM DIKETAHUI" : "🔴 SWAP GAGAL",
+        [
+          `Posisi ${position.id}`,
+          `Detail ${reason}`,
+          status === "UNKNOWN"
+            ? "Periksa signature di journal sebelum mengambil tindakan. Yolow tidak mengirim ulang otomatis."
+            : `Periksa rute, lalu gunakan /retryswap ${position.id} untuk mencoba lagi.`,
+        ],
+      ));
     } finally {
       try { await this.exportCsv(); }
       finally { this.swapsInFlight.delete(position.id); }

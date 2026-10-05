@@ -9,6 +9,8 @@ import type { DatabaseSync } from "node:sqlite";
 import type { YolowAgent } from "../agent.ts";
 import { sendTelegramDocument, tradesCsv, writeTradesCsv } from "../journal/export.ts";
 import { redactSecrets, safeError } from "../security.ts";
+import { fetchTokenInfo, tokenLabel } from "../market-data/token-info.ts";
+import { binStepLabel, notificationCard, positionRangeStatus, triggerOutcomeLabel, triggerReasonLabel } from "./presentation.ts";
 
 type Reply = { text: string; replyMarkup?: Record<string, unknown> };
 type Options = {
@@ -158,18 +160,37 @@ export function createCommandHandler(options: Options) {
       }
       case "/positions": {
         const positions = listPositions(db);
-        if (!positions.length) return { text: "Belum ada posisi Meteora DLMM yang terbuka." };
+        if (!positions.length) return { text: "📍 POSISI TERBUKA\nBelum ada posisi terbuka yang sedang dipantau." };
+        const tokenInfo = await fetchTokenInfo(positions.map((position) => position.tokenMint), jupiterApiKey, config.jupiter.tokens_base_url);
         const blocks = positions.map((position) => {
           const active = position.activeBin;
-          const lowerDistance = active === undefined ? "—" : String(Math.max(0, position.lowerBinId - active));
-          const upperDistance = active === undefined ? "—" : String(Math.max(0, active - position.upperBinId));
           const lastTrigger = db.prepare("SELECT reason,outcome FROM triggers WHERE position_id=? ORDER BY id DESC LIMIT 1")
             .get(position.id) as { reason: string; outcome: string } | undefined;
           const pair = `${short(position.tokenMint)}/${position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint)}`;
-          const block = `${position.ignored ? "⏸" : "🟢"} ${pair} · ${positionLabel(position.id)}\nPool ${short(position.pool)} · range ${position.lowerBinId}–${position.upperBinId}\nBin aktif ${active ?? "belum tersedia"} · OOR bawah ${lowerDistance} bin / atas ${upperDistance} bin\n${position.ignored ? "DIABAIKAN" : "DIPANTAU"} · ${lastTrigger ? `trigger ${lastTrigger.reason} (${lastTrigger.outcome})` : "belum ada trigger"} · sejak ${wib(position.firstSeenAt)}`;
-          return { block, button: { text: position.ignored ? "▶️ Lanjutkan" : "⏸ Abaikan", callback_data: `position:${position.ignored ? "unignore" : "ignore"}:${position.id}` } };
+          const signal = lastTrigger
+            ? `${triggerReasonLabel(lastTrigger.reason)} · ${triggerOutcomeLabel(lastTrigger.outcome)}`
+            : "Belum ada sinyal exit";
+          const block = [
+            `${position.ignored ? "⏸ SINYAL EXIT DIABAIKAN" : "🟢 DIPANTAU"} · ${pair}`,
+            `🪙 Token ${tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint))}`,
+            `🧭 Bin step ${binStepLabel(position.binStep, position.baseFeePercent)}`,
+            `🪙 Posisi ${positionLabel(position.id)}`,
+            `💧 Pool ${short(position.pool)}`,
+            `📊 Range bin ${position.lowerBinId}–${position.upperBinId}`,
+            `🎯 Bin aktif ${active ?? "belum tersedia"}`,
+            `🧭 ${positionRangeStatus(active, position.lowerBinId, position.upperBinId)}`,
+            `🔔 Sinyal terakhir: ${signal}`,
+            `🕒 Mulai dipantau: ${wib(position.firstSeenAt)}`,
+          ].join("\n");
+          return {
+            block,
+            button: {
+              text: position.ignored ? "▶️ Aktifkan exit" : "⏸ Abaikan exit",
+              callback_data: `position:${position.ignored ? "unignore" : "ignore"}:${position.id}`,
+            },
+          };
         });
-        return { text: `📍 POSISI (${positions.length})\n\n${blocks.map((item) => item.block).join("\n\n")}`,
+        return { text: `📍 POSISI TERBUKA · ${positions.length}\nGunakan tombol untuk mengatur sinyal exit.\n\n${blocks.map((item) => item.block).join("\n\n──────────────\n\n")}`,
           replyMarkup: { inline_keyboard: blocks.map((item) => [item.button]) } };
       }
       case "/tf": {
@@ -184,12 +205,19 @@ export function createCommandHandler(options: Options) {
       }
       case "/ignore":
       case "/unignore": {
-        if (!args[0]) return { text: `Gunakan ${command} <position_id>.` };
+        if (!args[0]) return { text: command === "/ignore"
+          ? "Buka 📍 Posisi, lalu tekan ⏸ Abaikan exit pada posisi yang dipilih."
+          : "Buka 📍 Posisi, lalu tekan ▶️ Aktifkan exit pada posisi yang dipilih." };
         const position = findPosition(db, args[0]);
         if (!position) return { text: "Posisi terbuka tidak ditemukan." };
         const ignored = command === "/ignore";
         if (!setPositionIgnored(db, position.id, ignored)) return { text: "Status posisi berubah sebelum perintah diterapkan." };
-        return { text: `${ignored ? "⏸ Posisi diabaikan" : "▶️ Pemantauan dilanjutkan"}\n${position.id}` };
+        return { text: notificationCard(
+          ignored ? "⏸ SINYAL EXIT DIABAIKAN" : "▶️ SINYAL EXIT DIAKTIFKAN",
+          [`Posisi ${positionLabel(position.id)}`, ignored
+            ? "Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi. Aktifkan lagi dengan /unignore."
+            : "Sinyal exit kembali dapat dieksekusi sesuai konfigurasi Yolow."],
+        ) };
       }
       case "/history": {
         const count = args[0] === undefined ? 10 : Number(args[0]);
@@ -307,11 +335,16 @@ export function createCommandHandler(options: Options) {
       if (!position) return { text: "Posisi terbuka tidak ditemukan." };
       const ignored = positionAction[1] === "ignore";
       if (!setPositionIgnored(db, position.id, ignored)) return { text: "Status posisi berubah sebelum perintah diterapkan." };
-      return { text: `${ignored ? "⏸ Pemantauan dijeda" : "▶️ Pemantauan dilanjutkan"}\n${positionLabel(position.id)}` };
+      return { text: notificationCard(
+        ignored ? "⏸ SINYAL EXIT DIABAIKAN" : "▶️ SINYAL EXIT DIAKTIFKAN",
+        [`Posisi ${positionLabel(position.id)}`, ignored
+          ? "Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi. Aktifkan lagi dengan /unignore."
+          : "Sinyal exit kembali dapat dieksekusi sesuai konfigurasi Yolow."],
+      ) };
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);
-      if (!["/status", "/positions", "/history", "/stats", "/export", "/tf", "/config"].includes(command.toLowerCase())) return undefined;
+      if (!["/status", "/positions", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
       return onCommand(command, args);
     }
     return undefined;

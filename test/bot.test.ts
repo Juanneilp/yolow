@@ -15,10 +15,13 @@ test("persistent button labels and slash commands route to menu actions", () => 
 
 test("inline home menu groups features into a two-column grid", () => {
   const rows = mainMenuMarkup.inline_keyboard;
-  assert.deepEqual(rows.slice(0, 3).map((row) => row.length), [2, 2, 2]);
-  assert.equal(rows[3][0].callback_data, "top_trending");
-  assert.equal(rows[3][1].callback_data, "cmd:/config");
-  assert.equal(rows[4][0].callback_data, "help");
+  assert.ok(rows.every((row) => row.length === 2));
+  const commands = new Set(rows.flat().map((button) => button.callback_data));
+  for (const command of ["/status", "/positions", "/history", "/stats", "/tf", "/export", "/config", "/ignore", "/unignore", "/trade", "/retryswap", "/note", "/tag", "/golive"]) {
+    assert.ok(commands.has(`cmd:${command}`), `menu is missing ${command}`);
+  }
+  assert.ok(commands.has("top_trending"));
+  assert.ok(commands.has("help"));
 });
 
 test("commands and callbacks require both the configured chat and allowed sender", () => {

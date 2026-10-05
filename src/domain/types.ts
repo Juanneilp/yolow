@@ -16,6 +16,8 @@ export type Position = {
   pool: string;
   tokenMint: string;
   quoteMint: string;
+  binStep?: number;
+  baseFeePercent?: number;
   lowerBinId: number;
   upperBinId: number;
   firstSeenAt: number;

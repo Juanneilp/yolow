@@ -36,7 +36,10 @@ export const mainMenuMarkup = { inline_keyboard: [
   [{ text: "📒 Riwayat", callback_data: "cmd:/history" }, { text: "📈 Statistik", callback_data: "cmd:/stats" }],
   [{ text: "⏱ Timeframe", callback_data: "cmd:/tf" }, { text: "📤 Export CSV", callback_data: "cmd:/export" }],
   [{ text: "🔥 Top Trending", callback_data: "top_trending" }, { text: "⚙️ Konfigurasi", callback_data: "cmd:/config" }],
-  [{ text: "🧰 Perintah lanjutan", callback_data: "help" }],
+  [{ text: "⏸ Abaikan exit", callback_data: "cmd:/ignore" }, { text: "▶️ Aktifkan exit", callback_data: "cmd:/unignore" }],
+  [{ text: "📖 Detail trade", callback_data: "cmd:/trade" }, { text: "🔁 Coba swap", callback_data: "cmd:/retryswap" }],
+  [{ text: "📝 Catatan trade", callback_data: "cmd:/note" }, { text: "🏷 Tag trade", callback_data: "cmd:/tag" }],
+  [{ text: "🔴 Live mode", callback_data: "cmd:/golive" }, { text: "🧰 Bantuan command", callback_data: "help" }],
 ] };
 
 const quickAccessMarkup = {
@@ -171,7 +174,7 @@ export async function runBot(options: BotOptions): Promise<void> {
             if (update.callback_query.data === "top_trending") await showTopTrending(update);
             else if (update.callback_query.data === "menu") await showMenu(update);
             else if (update.callback_query.data === "help") {
-              await editOrSend(update, "🧰 PERINTAH LANJUTAN\n/config · /config set <path> <nilai>\n/ignore <posisi> · /unignore <posisi>\n/trade <id> · /note <id> <catatan> · /tag <id> <tag>\n/stats [7d|30d|all] · /history [1–50]\n/retryswap <posisi> · /golive", mainMenuMarkup);
+              await editOrSend(update, "🧰 DAFTAR COMMAND\n/status · /positions · /history [1–50] · /stats [7d|30d|all]\n/tf [5m|15m|30m|1h] · /export · /toptrending · /config\n/config set <path> <nilai>\n/ignore <position_id> · /unignore <position_id>\n/trade <id|position_id> · /note <id|position_id> <catatan>\n/tag <id|position_id> <tag> · /retryswap <position_id>\n/golive · /menu · /start", mainMenuMarkup);
             } else if (options.onCallback) {
               const reply = await options.onCallback(String(update.callback_query.data ?? ""));
               if (reply) await editOrSend(update, reply.text, withMenuNavigation(reply.replyMarkup));
