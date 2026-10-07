@@ -186,6 +186,11 @@ test("Telegram config editor navigates sections, toggles booleans, sets presets,
     assert.match(invalid?.text ?? "", /CONFIG TIDAK DIUBAH/);
     assert.equal(config.top_trending.min_holders, 2500);
 
+    // Non-editable paths are rejected before an editor opens.
+    assert.match((await handler.onCallback("config:edit:mode.dry_run"))?.text ?? "", /tidak dapat diubah/);
+    assert.match((await handler.onCallback("config:input:mode.dry_run"))?.text ?? "", /tidak dapat diubah/);
+    assert.match((await handler.onCallback("config:set:mode.dry_run:false"))?.text ?? "", /CONFIG TIDAK DIUBAH/);
+
     // Navigating away from the input prompt cancels the pending input.
     await handler.onCallback("config:input:top_trending.min_holders");
     await handler.onCallback("config:section:trending");

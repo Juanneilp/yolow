@@ -158,6 +158,9 @@ export function createCommandHandler(options: Options) {
   };
 
   const configEditReply = (path: string): Reply => {
+    if (!editablePaths.has(path)) {
+      return { text: "❌ Parameter ini tidak dapat diubah melalui Telegram.", replyMarkup: configMenuMarkup };
+    }
     const value = configValueAt(config, path);
     const presets = configParameterPresets[path];
     const rows: Array<Array<{ text: string; callback_data: string }>> = [];
@@ -394,7 +397,7 @@ export function createCommandHandler(options: Options) {
     const inputPath = /^config:input:([A-Za-z0-9_.-]+)$/.exec(data);
     if (inputPath) {
       const path = inputPath[1];
-      if (!editablePaths.has(path)) return { text: "Parameter ini tidak dapat diubah melalui Telegram.", replyMarkup: configMenuMarkup };
+      if (!editablePaths.has(path)) return { text: "❌ Parameter ini tidak dapat diubah melalui Telegram.", replyMarkup: configMenuMarkup };
       pendingConfigInput.set(options.chatId, { path, until: Date.now() + configPendingInputMs });
       return {
         text: `✏️ KIRIM NILAI BARU\n<code>${escapeHtml(path)}</code>\nNilai saat ini: <b>${escapeHtml(configValueText(configValueAt(config, path)))}</b>\n\nKirim nilainya sekarang (berlaku 5 menit), atau kirim <code>batal</code>.`,
