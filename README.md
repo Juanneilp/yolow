@@ -48,7 +48,7 @@ pm2 stop yolow
 
 In Telegram, send `/start` and tap **Menu**. `/status` and `/positions` show the current agent state. `/ignore <position_id>` and `/unignore <position_id>` persist exclusions; `/tf <5m|15m|30m|1h>` selects the indicator timeframe. The menu also provides journal, export, and Top Trending commands.
 
-Open **⚙️ Konfigurasi** or send `/config` to browse settings. Change a validated value with `/config set <path> <value>`, for example `/config set oor_exit.below.trigger_bins 24` or `/config set indicator_exit.enabled false`. Config changes are atomically saved and audited. Values that need process reinitialization say so in the reply; API secrets and `mode.dry_run` cannot be changed through Telegram.
+Open **⚙️ Konfigurasi** or send `/config` to browse settings. Tap a section, then tap a parameter to edit it: booleans and preset lists (timeframe, volume window, candle provider, price unit) use buttons, while numbers, arrays, and free-form strings use **✏️ Ketik nilai** and accept the raw value as your next message (send `batal` to cancel). The equivalent `/config set <path> <value>` syntax still works, for example `/config set oor_exit.below.trigger_bins 24` or `/config set indicator_exit.enabled false`. Config changes are atomically saved and audited. Values that need process reinitialization say so in the reply; API secrets and `mode.dry_run` cannot be changed through Telegram.
 
 While `dry_run` is enabled, Yolow simulates Meteora close transactions and requests Jupiter Swap V2 build quotes without signing or sending. To enable live transactions, configure the external keypair and use `/golive`, then press its confirmation button. Every live close and swap is simulated before broadcast; uncertain broadcast status is recorded and never retried automatically.
 
@@ -58,4 +58,4 @@ Meteora DLMM and GeckoTerminal candle retrieval are implemented. GMGN candle dat
 
 GeckoTerminal requests are serialized to stay near its public API rate limit. The free endpoint is cached and rate limited, so it is intended as a fallback. Set per-pool `indicator_exit.timeframe` or `oor_exit` overrides in `pool_overrides` when a pool needs different settings; `/tf` changes the default timeframe for pools without an override.
 
-Top Trending remains read-only. GMGN ATH MarketCap is shown as `N/A` when the API key or matching token data is unavailable.
+Top Trending remains read-only. Its filters (MCap, token age, holders, TVL, Organic Score, and result limit) and the ranking volume window (`top_trending.volume_window`: `4h`, `12h`, or `24h`; the Meteora API has no 6-hour window) are editable from the **🔥 Top Trending** config section. Result cards have **🔄 Refresh** and **⚙️ Filter** buttons. GMGN ATH MarketCap is shown as `N/A` when the API key or matching token data is unavailable.

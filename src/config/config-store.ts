@@ -11,7 +11,7 @@ export type ConfigUpdate = {
   restartRequired: boolean;
 };
 
-const editablePaths = new Set([
+export const editablePaths = new Set([
   "indicator_exit.enabled", "indicator_exit.timeframe", "indicator_exit.min_age_candles",
   "indicator_exit.indicators.rsi.period", "indicator_exit.indicators.rsi.overbought",
   "indicator_exit.indicators.bb.period", "indicator_exit.indicators.bb.std_dev",
@@ -21,7 +21,7 @@ const editablePaths = new Set([
   "oor_exit.above.enabled", "oor_exit.above.trigger_bins", "oor_exit.above.confirm_sec",
   "top_trending.enabled", "top_trending.limit", "top_trending.min_market_cap_usd",
   "top_trending.min_token_age_hours", "top_trending.max_token_age_days", "top_trending.min_holders",
-  "top_trending.min_tvl_usd", "top_trending.min_organic_score",
+  "top_trending.min_tvl_usd", "top_trending.min_organic_score", "top_trending.volume_window",
   "execution.max_retries", "execution.priority_fee.microlamports", "execution.priority_fee.max_cap_microlamports",
   "swap.enabled", "swap.min_value_usd", "swap.slippage_bps", "swap.max_slippage_bps", "swap.max_retries",
   "candles.primary", "candles.fallback_chain", "candles.price_unit", "candles.poll_interval_sec",

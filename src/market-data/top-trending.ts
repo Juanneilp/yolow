@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readJsonResponse, redactSecrets, safeError } from "../security.ts";
+import { escapeHtml, readJsonResponse, redactSecrets, safeError } from "../security.ts";
+
+export type VolumeWindow = "4h" | "12h" | "24h";
 
 export type TopTrendingConfig = {
   limit: number;
@@ -9,7 +11,11 @@ export type TopTrendingConfig = {
   min_holders: number;
   min_tvl_usd: number;
   min_organic_score: number;
+  volume_window: VolumeWindow;
 };
+
+const volumeWindowLabel: Record<VolumeWindow, string> = { "4h": "4 jam", "12h": "12 jam", "24h": "24 jam" };
+const volumeWindowShort: Record<VolumeWindow, string> = { "4h": "4j", "12h": "12j", "24h": "24j" };
 
 type Token = {
   address?: string;
@@ -52,7 +58,7 @@ export type TrendingToken = {
   pair: string;
   tvlUsd: number;
   organicScore: number;
-  volume24h: number;
+  volume: number;
   athMarketCapUsd?: number;
   dropFromAthPercent?: number;
 };
@@ -95,8 +101,8 @@ export function selectTopTrending(
 
   for (const pool of pools) {
     const tvlUsd = numeric(pool.tvl);
-    const volume24h = numeric(pool.volume?.["24h"]);
-    if (tvlUsd === undefined || volume24h === undefined || !pool.address) continue;
+    const volume = numeric(pool.volume?.[config.volume_window]);
+    if (tvlUsd === undefined || volume === undefined || !pool.address) continue;
 
     for (const token of tokenCandidates(pool, config)) {
       const mint = token.address!;
@@ -119,16 +125,16 @@ export function selectTopTrending(
         pair: `${token.symbol || jupiter?.symbol || "?"}/SOL`,
         tvlUsd,
         organicScore,
-        volume24h,
+        volume,
       };
 
       const previous = selected.get(mint);
-      if (!previous || result.volume24h > previous.volume24h) selected.set(mint, result);
+      if (!previous || result.volume > previous.volume) selected.set(mint, result);
     }
   }
 
   return [...selected.values()]
-    .sort((a, b) => b.volume24h - a.volume24h || a.symbol.localeCompare(b.symbol))
+    .sort((a, b) => b.volume - a.volume || a.symbol.localeCompare(b.symbol))
     .slice(0, config.limit);
 }
 
@@ -172,7 +178,7 @@ export async function fetchTopTrending(
     const url = new URL(meteoraUrl);
     url.searchParams.set("page", String(page));
     url.searchParams.set("page_size", String(PAGE_SIZE));
-    url.searchParams.set("sort_by", "volume_24h:desc");
+    url.searchParams.set("sort_by", `volume_${config.volume_window}:desc`);
     url.searchParams.set("filter_by", `tvl>=${config.min_tvl_usd}`);
 
     const response = await getJson<{ data?: Pool[]; pages?: number }>(url);
@@ -202,14 +208,14 @@ export async function fetchTopTrending(
 
     for (const token of selectTopTrending(response.data, jupiterByMint, config, nowMs)) {
       const previous = selected.get(token.mint);
-      if (!previous || token.volume24h > previous.volume24h) selected.set(token.mint, token);
+      if (!previous || token.volume > previous.volume) selected.set(token.mint, token);
     }
     if (selected.size >= config.limit || page >= pageCount) break;
     page += 1;
   }
 
   const results = [...selected.values()]
-    .sort((a, b) => b.volume24h - a.volume24h || a.symbol.localeCompare(b.symbol))
+    .sort((a, b) => b.volume - a.volume || a.symbol.localeCompare(b.symbol))
     .slice(0, config.limit);
 
   if (!gmgnApiKey?.trim() || results.length === 0) return results;
@@ -256,10 +262,6 @@ function cleanLabel(value: string, maxLength = 32): string {
   return redactSecrets(value).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 const usdFormat = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -285,7 +287,7 @@ export function formatTopTrending(
   const lines = [
     `🔥 <b>TOP TRENDING</b> <code>${tokens.length}/${config.limit}</code>`,
     `🔎 MCap ≥ ${usdFormat.format(config.min_market_cap_usd)} · Umur ${config.min_token_age_hours} jam–${config.max_token_age_days} hari · Holder ≥ ${config.min_holders.toLocaleString("en-US")} · TVL ≥ ${usdFormat.format(config.min_tvl_usd)} · Organic ≥ ${config.min_organic_score}`,
-    "📊 Meteora DLMM · Pool token/SOL saja · Urut volume 24 jam",
+    `📊 Meteora DLMM · Pool token/SOL saja · Urut volume ${volumeWindowLabel[config.volume_window]}`,
     `🕒 Data ${time} WIB`,
     "━━━━━━━━━━━━━━━━━━",
   ];
@@ -298,7 +300,7 @@ export function formatTopTrending(
     const name = escapeHtml(cleanLabel(token.name));
     lines.push(
       `<b>${index + 1}. ${symbol}</b>${symbol === name ? "" : ` · ${name}`}`,
-      `💵 MCap <b>${usdFormat.format(token.marketCapUsd)}</b> 📈 24j ${usdFormat.format(token.volume24h)} · 🕓 ${age} · 👥 ${token.holders.toLocaleString("en-US")}`,
+      `💵 MCap <b>${usdFormat.format(token.marketCapUsd)}</b> 📈 ${volumeWindowShort[config.volume_window]} ${usdFormat.format(token.volume)} · 🕓 ${age} · 👥 ${token.holders.toLocaleString("en-US")}`,
       `ATH MC <b>${token.athMarketCapUsd === undefined ? "N/A" : usdFormat.format(token.athMarketCapUsd)}</b> · turun <b>${token.dropFromAthPercent === undefined ? "N/A" : `${token.dropFromAthPercent.toFixed(1)}%`}</b>`,
       `🔗 ${escapeHtml(cleanLabel(token.pair, 24))} · 💧 TVL ${usdFormat.format(token.tvlUsd)} · 🌱 Organic ${token.organicScore.toFixed(1)}`,
       `CA <code>${escapeHtml(token.mint)}</code>`,

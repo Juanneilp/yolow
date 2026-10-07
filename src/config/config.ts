@@ -28,7 +28,7 @@ export type AppConfig = {
   }>;
   execution: { priority_fee: Record<string, any>; max_retries: number };
   swap: { enabled: boolean; output: "SOL"; min_value_usd: number; slippage_bps: number; max_slippage_bps: number; max_retries: number; close_empty_token_account: boolean };
-  top_trending: { enabled: boolean; limit: number; min_market_cap_usd: number; min_token_age_hours: number; max_token_age_days: number; min_holders: number; min_tvl_usd: number; min_organic_score: number };
+  top_trending: { enabled: boolean; limit: number; min_market_cap_usd: number; min_token_age_hours: number; max_token_age_days: number; min_holders: number; min_tvl_usd: number; min_organic_score: number; volume_window: "4h" | "12h" | "24h" };
   jupiter: { base_url: string; tokens_base_url: string; price_base_url?: string };
   notify: { low_sol_balance_alert_sol: number; heartbeat: { enabled: boolean; at_time: string } };
   history: Record<string, any>;
@@ -189,6 +189,8 @@ export function parseConfig(text: string): AppConfig {
   integer(trending.min_holders, "top_trending.min_holders", 0);
   if (trending.min_organic_score > 100) throw new Error("top_trending.min_organic_score cannot exceed 100");
   if (trending.max_token_age_days * 24 < trending.min_token_age_hours) throw new Error("top_trending.max_token_age_days is below minimum age");
+  if (trending.volume_window === undefined) trending.volume_window = "24h";
+  if (!["4h", "12h", "24h"].includes(trending.volume_window)) throw new Error("top_trending.volume_window must be 4h, 12h, or 24h");
   if (swap.enabled && (!config.jupiter?.base_url || !config.jupiter?.tokens_base_url)) throw new Error("Jupiter URLs are required when swaps are enabled");
   endpoint(config.jupiter?.base_url, "jupiter.base_url", "https:", "api.jup.ag");
   endpoint(config.jupiter?.tokens_base_url, "jupiter.tokens_base_url", "https:", "api.jup.ag");

@@ -25,6 +25,8 @@ test("config editor validates values and leaves the running config untouched unt
   assert.equal(update.newValue, 24);
   assert.throws(() => prepareConfigUpdate(current, "oor_exit.below.trigger_bins", "0"), /must be a number >= 1/);
   assert.equal(prepareConfigUpdate(current, "top_trending.min_token_age_hours", "5").config.top_trending.min_token_age_hours, 5);
+  assert.equal(prepareConfigUpdate(current, "top_trending.volume_window", "\"4h\"").config.top_trending.volume_window, "4h");
+  assert.throws(() => prepareConfigUpdate(current, "top_trending.volume_window", "\"6h\""), /volume_window/);
   assert.throws(() => prepareConfigUpdate(current, "mode.dry_run", "false"), /tidak dapat diubah/);
   assert.throws(() => prepareConfigUpdate(current, "mode.shadow_candles", "false"), /belum diterapkan/);
   assert.throws(() => prepareConfigUpdate(current, "rpc.http_base.api_key", "secret"), /Secret/);
@@ -107,6 +109,94 @@ test("Telegram /config set persists, hot-applies, and audits a validated setting
   }
 });
 
+test("Telegram config editor navigates sections, toggles booleans, sets presets, and accepts typed input", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "yolow-telegram-editor-"));
+  const path = join(directory, "config.json");
+  const config = await exampleConfig();
+  const db = openDatabase(":memory:");
+  try {
+    await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const handler = createCommandHandler({
+      agent: { executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+      db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
+      telegramToken: "test", chatId: "test", configPath: path, jupiterApiKey: "test", config,
+    });
+
+    // Section view lists parameters as buttons.
+    const section = await handler.onCallback("config:section:trending");
+    const sectionButtons = (section?.replyMarkup?.inline_keyboard as any[][]).flat();
+    assert.ok(sectionButtons.some((button) => button.callback_data === "config:edit:top_trending.volume_window"));
+
+    // Editor shows the current value and window presets.
+    const editor = await handler.onCallback("config:edit:top_trending.volume_window");
+    assert.match(editor?.text ?? "", /top_trending\.volume_window/);
+    assert.match(editor?.text ?? "", /24h/);
+    assert.equal(editor?.parseMode, "HTML");
+    const presets = (editor?.replyMarkup?.inline_keyboard as any[][]).flat()
+      .filter((button) => button.callback_data.startsWith("config:set:top_trending.volume_window:"));
+    assert.deepEqual(presets.map((button) => button.callback_data.split(":").at(-1)), ["4h", "12h", "24h"]);
+
+    // Tapping a preset persists, hot-applies, and audits.
+    const applied = await handler.onCallback("config:set:top_trending.volume_window:4h");
+    assert.match(applied?.text ?? "", /CONFIG DISIMPAN/);
+    assert.equal(config.top_trending.volume_window, "4h");
+    assert.equal(parseConfig(await readFile(path, "utf8")).top_trending.volume_window, "4h");
+    const audit = db.prepare("SELECT path,old_value,new_value FROM config_changes ORDER BY id DESC LIMIT 1").get() as Record<string, string>;
+    assert.equal(audit.path, "top_trending.volume_window");
+    assert.equal(audit.old_value, "\"24h\"");
+    assert.equal(audit.new_value, "\"4h\"");
+
+    // Boolean toggle applies immediately.
+    const toggled = await handler.onCallback("config:set:top_trending.enabled:false");
+    assert.match(toggled?.text ?? "", /CONFIG DISIMPAN/);
+    assert.equal(config.top_trending.enabled, false);
+
+    // Typed input flow: request input, then send the raw value as a message.
+    const inputPrompt = await handler.onCallback("config:input:top_trending.min_holders");
+    assert.match(inputPrompt?.text ?? "", /KIRIM NILAI BARU/);
+    const typed = await handler.onText("2500");
+    assert.match(typed?.text ?? "", /CONFIG DISIMPAN/);
+    assert.equal(config.top_trending.min_holders, 2500);
+    assert.equal(parseConfig(await readFile(path, "utf8")).top_trending.min_holders, 2500);
+
+    // Typing "batal" cancels the pending input without changing anything.
+    await handler.onCallback("config:input:top_trending.min_holders");
+    const cancelled = await handler.onText("batal");
+    assert.match(cancelled?.text ?? "", /dibatalkan/);
+    assert.equal(config.top_trending.min_holders, 2500);
+
+    // Menu navigation is not swallowed, and abandons the pending input so stray text is ignored.
+    await handler.onCallback("config:input:top_trending.min_holders");
+    assert.equal(await handler.onText("Menu"), undefined);
+    assert.equal(await handler.onText("/status"), undefined);
+    assert.equal(await handler.onText("9999"), undefined);
+    assert.equal(config.top_trending.min_holders, 2500);
+
+    // The cancel button clears the pending input as well.
+    const prompt = await handler.onCallback("config:input:top_trending.min_holders");
+    assert.equal((prompt?.replyMarkup?.inline_keyboard as any[][])[0][0].callback_data, "config:cancel");
+    const cancelButton = await handler.onCallback("config:cancel");
+    assert.match(cancelButton?.text ?? "", /dibatalkan/);
+    assert.equal(await handler.onText("7777"), undefined);
+    assert.equal(config.top_trending.min_holders, 2500);
+
+    // Invalid typed values keep the running config untouched.
+    await handler.onCallback("config:input:top_trending.min_holders");
+    const invalid = await handler.onText("\"bukan angka\"");
+    assert.match(invalid?.text ?? "", /CONFIG TIDAK DIUBAH/);
+    assert.equal(config.top_trending.min_holders, 2500);
+
+    // Navigating away from the input prompt cancels the pending input.
+    await handler.onCallback("config:input:top_trending.min_holders");
+    await handler.onCallback("config:section:trending");
+    assert.equal(await handler.onText("9999"), undefined);
+    assert.equal(config.top_trending.min_holders, 2500);
+  } finally {
+    db.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Telegram /positions explains range distance and labels paused exit signals clearly", async () => {
   const config = await exampleConfig();
   const db = openDatabase(":memory:");
@@ -122,7 +212,7 @@ test("Telegram /positions explains range distance and labels paused exit signals
     assert.equal(url.pathname, "/tokens/v2/search");
     assert.equal(url.searchParams.get("query"), "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump");
     assert.equal(new Headers(init?.headers).get("x-api-key"), "test-jupiter-key");
-    return new Response(JSON.stringify([{ id: "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump", symbol: "BONK", name: "Bonk" }]), { status: 200 });
+    return new Response(JSON.stringify([{ id: "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump", symbol: "BONK", name: "<b>Bonk</b>" }]), { status: 200 });
   }) as typeof fetch;
   const handler = createCommandHandler({
     agent: { executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
@@ -132,21 +222,24 @@ test("Telegram /positions explains range distance and labels paused exit signals
 
   try {
     const initial = await handler.onCommand("/positions", []);
-    assert.match(initial?.text ?? "", /📍 POSISI TERBUKA · 1/);
-    assert.match(initial?.text ?? "", /🪙 Token BONK · Bonk/);
+    assert.match(initial?.text ?? "", /📍 <b>POSISI TERBUKA<\/b> · 1/);
+    assert.match(initial?.text ?? "", /🪙 Token <b>BONK · &lt;b&gt;Bonk&lt;\/b&gt;<\/b>/);
     assert.match(initial?.text ?? "", /🧭 Bin step 25 · Fee 2%/);
     assert.match(initial?.text ?? "", /Dalam range · 125 bin dari batas bawah · 37 bin dari batas atas/);
     assert.match(initial?.text ?? "", /Sinyal terakhir: Belum ada sinyal exit/);
+    assert.ok((initial?.text ?? "").includes(`🪙 Posisi <code>${id}</code>`));
+    assert.ok((initial?.text ?? "").includes(`💧 Pool <code>${pool}</code>`));
+    assert.equal(initial?.parseMode, "HTML");
     assert.equal(initial?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "⏸ Abaikan exit");
 
     const menuPositions = await handler.onCallback("cmd:/positions");
-    assert.match(menuPositions?.text ?? "", /📍 POSISI TERBUKA · 1/);
+    assert.match(menuPositions?.text ?? "", /📍 <b>POSISI TERBUKA<\/b> · 1/);
     assert.match((await handler.onCallback("cmd:/ignore"))?.text ?? "", /tekan ⏸ Abaikan exit/);
 
     const ignored = await handler.onCommand("/ignore", [id]);
     assert.match(ignored?.text ?? "", /Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi/);
     const paused = await handler.onCommand("/positions", []);
-    assert.match(paused?.text ?? "", /⏸ SINYAL EXIT DIABAIKAN/);
+    assert.match(paused?.text ?? "", /⏸ <b>SINYAL EXIT DIABAIKAN<\/b>/);
     assert.equal(paused?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "▶️ Aktifkan exit");
   } finally {
     globalThis.fetch = originalFetch;

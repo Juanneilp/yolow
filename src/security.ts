@@ -20,6 +20,10 @@ export function safeError(error: unknown): string {
     .slice(0, 500);
 }
 
+export function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 export function telegramApiBase(token: string): string {
   if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) throw new Error("TELEGRAM_BOT_TOKEN format is invalid");
   return `https://api.telegram.org/bot${token}`;

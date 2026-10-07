@@ -100,7 +100,8 @@
     "max_token_age_days": 60,
     "min_holders": 1000,
     "min_tvl_usd": 10000,
-    "min_organic_score": 70
+    "min_organic_score": 70,
+    "volume_window": "24h"
   },
 
   "jupiter": {

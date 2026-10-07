@@ -1,18 +1,18 @@
 import { join } from "node:path";
 import type { Connection, PublicKey } from "@solana/web3.js";
 import { timeframes, type AppConfig } from "../config/config.ts";
-import { applyConfigInPlace, prepareConfigUpdate, writeConfigAtomically } from "../config/config-store.ts";
+import { applyConfigInPlace, editablePaths, prepareConfigUpdate, writeConfigAtomically } from "../config/config-store.ts";
 import { loadSigner, setLiveMode } from "../execution/executor.ts";
 import { listPositions, setPositionIgnored } from "../positions/monitor.ts";
 import { getMeta, setMeta } from "../storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { YolowAgent } from "../agent.ts";
 import { sendTelegramDocument, tradesCsv, writeTradesCsv } from "../journal/export.ts";
-import { redactSecrets, safeError } from "../security.ts";
+import { escapeHtml, redactSecrets, safeError } from "../security.ts";
 import { fetchTokenInfo, tokenLabel } from "../market-data/token-info.ts";
 import { binStepLabel, notificationCard, positionRangeStatus, triggerOutcomeLabel, triggerReasonLabel } from "./presentation.ts";
 
-type Reply = { text: string; replyMarkup?: Record<string, unknown> };
+type Reply = { text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" };
 type Options = {
   agent: YolowAgent;
   db: DatabaseSync;
@@ -51,7 +51,7 @@ const configSections: Record<string, { title: string; paths: string[] }> = {
   trending: { title: "TOP TRENDING", paths: [
     "top_trending.enabled", "top_trending.limit", "top_trending.min_market_cap_usd",
     "top_trending.min_token_age_hours", "top_trending.max_token_age_days", "top_trending.min_holders",
-    "top_trending.min_tvl_usd", "top_trending.min_organic_score",
+    "top_trending.min_tvl_usd", "top_trending.min_organic_score", "top_trending.volume_window",
   ] },
   execution: { title: "EKSEKUSI & SWAP", paths: [
     "execution.max_retries", "execution.priority_fee.microlamports", "execution.priority_fee.max_cap_microlamports",
@@ -87,7 +87,16 @@ function configDisplayValue(path: string, value: unknown): string {
 function configSectionText(config: AppConfig, section: string): string | undefined {
   const entry = configSections[section];
   if (!entry) return undefined;
-  return `⚙️ ${entry.title}\n${entry.paths.map((path) => `${path} = ${configValueText(configValueAt(config, path))}`).join("\n")}\n\nUbah: /config set <path> <nilai>\nContoh: /config set ${entry.paths.find((path) => typeof configValueAt(config, path) === "number") ?? entry.paths[0]} ${configValueText(configValueAt(config, entry.paths.find((path) => typeof configValueAt(config, path) === "number") ?? entry.paths[0]))}`;
+  return `⚙️ ${entry.title}\n${entry.paths.map((path) => `${path} = ${configValueText(configValueAt(config, path))}`).join("\n")}\n\nTap tombol di bawah untuk mengubah parameter.`;
+}
+
+function configSectionMarkup(section: string): Record<string, unknown> {
+  const entry = configSections[section];
+  const buttons = entry.paths.map((path) => ({ text: path.split(".").slice(1).join("."), callback_data: `config:edit:${path}` }));
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (let index = 0; index < buttons.length; index += 2) rows.push(buttons.slice(index, index + 2));
+  rows.push([{ text: "↩ Menu config", callback_data: "cmd:/config" }]);
+  return { inline_keyboard: rows };
 }
 
 function auditValue(path: string, value: unknown): string {
@@ -107,12 +116,74 @@ function findTrade(db: DatabaseSync, key: string): Record<string, any> | undefin
 
 function noTrade(key: string): never { throw new Error(`Trade '${key}' tidak ditemukan.`); }
 
+const configParameterPresets: Record<string, string[]> = {
+  "indicator_exit.timeframe": ["5m", "15m", "30m", "1h"],
+  "top_trending.volume_window": ["4h", "12h", "24h"],
+  "candles.price_unit": ["usd", "sol"],
+  "candles.primary": ["gmgn", "meteora", "geckoterminal", "onchain_ticks"],
+};
+const configPendingInputMs = 5 * 60_000;
+
 export function createCommandHandler(options: Options) {
   const { agent, db, connection, wallet, config, jupiterApiKey } = options;
   const configPath = options.configPath ?? configPathDefault;
+  const pendingConfigInput = new Map<string, { path: string; until: number }>();
   const wib = (epoch: unknown) => typeof epoch === "number"
     ? `${new Intl.DateTimeFormat("id-ID", { timeZone: config.timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(epoch))} WIB`
     : "—";
+
+  const applyValidatedConfigUpdate = async (path: string, rawValue: string): Promise<Reply> => {
+    try {
+      const update = prepareConfigUpdate(config, path, rawValue);
+      if ((update.config.swap.enabled || update.config.top_trending.enabled) && !jupiterApiKey) {
+        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau Top Trending.");
+      }
+      await writeConfigAtomically(configPath, `${JSON.stringify(update.config, null, 2)}\n`);
+      applyConfigInPlace(config, update.config);
+      db.prepare(`INSERT INTO config_changes(changed_at,path,old_value,new_value) VALUES(?,?,?,?)`)
+        .run(Date.now(), path, auditValue(path, update.oldValue), auditValue(path, update.newValue));
+      let refreshNote = "";
+      if (path === "indicator_exit.timeframe") {
+        try { await agent.setTimeframe(update.config.indicator_exit.timeframe); }
+        catch (error) {
+          const reason = safeError(error);
+          console.warn("Config saved but timeframe refresh failed:", reason);
+          refreshNote = `\nRefresh candle perlu dicoba ulang: ${reason}`;
+        }
+      }
+      return { text: `✅ CONFIG DISIMPAN\n${path}\nSebelum: ${configDisplayValue(path, update.oldValue)}\nSekarang: ${configDisplayValue(path, update.newValue)}\n${update.restartRequired ? "Perubahan aktif setelah PM2 restart yolow." : "Perubahan aktif sekarang."}${refreshNote}`, replyMarkup: configMenuMarkup };
+    } catch (error) {
+      return { text: `❌ CONFIG TIDAK DIUBAH\n${safeError(error)}`, replyMarkup: configMenuMarkup };
+    }
+  };
+
+  const configEditReply = (path: string): Reply => {
+    const value = configValueAt(config, path);
+    const presets = configParameterPresets[path];
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    if (typeof value === "boolean") {
+      rows.push([
+        { text: `${value === true ? "✓ " : ""}✅ Aktif`, callback_data: `config:set:${path}:true` },
+        { text: `${value === false ? "✓ " : ""}❌ Nonaktif`, callback_data: `config:set:${path}:false` },
+      ]);
+    }
+    if (presets) {
+      const buttons = presets.map((preset) => ({ text: `${value === preset ? "✓ " : ""}${preset}`, callback_data: `config:set:${path}:${preset}` }));
+      for (let index = 0; index < buttons.length; index += 2) rows.push(buttons.slice(index, index + 2));
+    }
+    if (!presets || typeof value !== "boolean") {
+      rows.push([{ text: "✏️ Ketik nilai", callback_data: `config:input:${path}` }]);
+    }
+    rows.push([{ text: "↩ Kembali", callback_data: `config:back:${path}` }]);
+    const hint = typeof value === "boolean" || presets
+      ? ""
+      : "\n\nNilai JSON: angka, true/false, atau [\"a\",\"b\"] untuk daftar.";
+    return {
+      text: `⚙️ UBAH PARAMETER\n<code>${escapeHtml(path)}</code>\nNilai saat ini: <b>${escapeHtml(configValueText(value))}</b>${hint}`,
+      replyMarkup: { inline_keyboard: rows },
+      parseMode: "HTML",
+    };
+  };
 
   const onCommand = async (command: string, args: string[]): Promise<Reply | undefined> => {
     switch (command.toLowerCase()) {
@@ -121,40 +192,32 @@ export function createCommandHandler(options: Options) {
         const ignored = positions.filter((position) => position.ignored).length;
         const failures = Number(getMeta(db, "close_failures") ?? 0);
         const active = positions.length - ignored;
-        return { text: `⚡ YOLOW · METEORA DLMM\n━━━━━━━━━━━━━━━━━━\n👛 Wallet ${short(wallet.toBase58())}\n💰 Saldo ${sol(balance)}\n🛡 Mode ${agent.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE"}\n📍 Posisi ${active} dipantau · ${ignored} dijeda\n⏱ Timeframe ${agent.getTimeframe()} · Swap ${config.swap.enabled ? "aktif" : "nonaktif"}\n🧯 Gagal close ${failures}/3\n🕒 ${wib(Date.now())}` };
+        const mode = agent.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE";
+        return {
+          text: [
+            "⚡ <b>YOLOW · METEORA DLMM</b>",
+            "━━━━━━━━━━━━━━━━━━",
+            `👛 Wallet <code>${escapeHtml(short(wallet.toBase58()))}</code>`,
+            `💰 Saldo <b>${sol(balance)}</b>`,
+            `🛡 Mode <b>${mode}</b>`,
+            `📍 Posisi <b>${active}</b> dipantau · <b>${ignored}</b> dijeda`,
+            `⏱ Timeframe <b>${agent.getTimeframe()}</b> · Swap ${config.swap.enabled ? "aktif" : "nonaktif"}`,
+            `🧯 Gagal close <b>${failures}/3</b>`,
+            `🕒 ${wib(Date.now())}`,
+          ].join("\n"),
+          parseMode: "HTML",
+        };
       }
       case "/config": {
         if (args[0]?.toLowerCase() === "set") {
           const path = args[1];
           const rawValue = args.slice(2).join(" ").trim();
           if (!path || !rawValue) return { text: "Gunakan /config set <path> <nilai>. Boolean dan angka ditulis sebagai JSON; string boleh tanpa tanda kutip." };
-          try {
-            const update = prepareConfigUpdate(config, path, rawValue);
-            if ((update.config.swap.enabled || update.config.top_trending.enabled) && !jupiterApiKey) {
-              throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau Top Trending.");
-            }
-            await writeConfigAtomically(configPath, `${JSON.stringify(update.config, null, 2)}\n`);
-            applyConfigInPlace(config, update.config);
-            db.prepare(`INSERT INTO config_changes(changed_at,path,old_value,new_value) VALUES(?,?,?,?)`)
-              .run(Date.now(), path, auditValue(path, update.oldValue), auditValue(path, update.newValue));
-            let refreshNote = "";
-            if (path === "indicator_exit.timeframe") {
-              try { await agent.setTimeframe(update.config.indicator_exit.timeframe); }
-              catch (error) {
-                const reason = safeError(error);
-                console.warn("Config saved but timeframe refresh failed:", reason);
-                refreshNote = `\nRefresh candle perlu dicoba ulang: ${reason}`;
-              }
-            }
-            return { text: `✅ CONFIG DISIMPAN\n${path}\nSebelum: ${configDisplayValue(path, update.oldValue)}\nSekarang: ${configDisplayValue(path, update.newValue)}\n${update.restartRequired ? "Perubahan aktif setelah PM2 restart yolow." : "Perubahan aktif sekarang."}${refreshNote}`, replyMarkup: configMenuMarkup };
-          } catch (error) {
-            const reason = safeError(error);
-            return { text: `❌ CONFIG TIDAK DIUBAH\n${reason}`, replyMarkup: configMenuMarkup };
-          }
+          return applyValidatedConfigUpdate(path, rawValue);
         }
         if (args.length) return { text: "Gunakan /config untuk melihat pengaturan atau /config set <path> <nilai> untuk mengubah." };
         return {
-          text: `⚙️ KONFIGURASI YOLOW\nMode ${agent.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE"} · timeframe ${agent.getTimeframe()}\nUbah config tervalidasi langsung dari Telegram.\n\nFormat: /config set <path> <nilai>\nContoh: /config set oor_exit.below.trigger_bins 24\nMode dry_run dan secret tidak dapat diubah lewat menu.`,
+          text: `⚙️ KONFIGURASI YOLOW\nMode ${agent.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE"} · timeframe ${agent.getTimeframe()}\nPilih bagian di bawah, lalu tap parameter untuk mengubahnya.\n\nBisa juga: /config set <path> <nilai>\nMode dry_run dan secret tidak dapat diubah lewat menu.`,
           replyMarkup: configMenuMarkup,
         };
       }
@@ -170,16 +233,17 @@ export function createCommandHandler(options: Options) {
           const signal = lastTrigger
             ? `${triggerReasonLabel(lastTrigger.reason)} · ${triggerOutcomeLabel(lastTrigger.outcome)}`
             : "Belum ada sinyal exit";
+          const tokenText = escapeHtml(tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint)));
           const block = [
-            `${position.ignored ? "⏸ SINYAL EXIT DIABAIKAN" : "🟢 DIPANTAU"} · ${pair}`,
-            `🪙 Token ${tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint))}`,
-            `🧭 Bin step ${binStepLabel(position.binStep, position.baseFeePercent)}`,
-            `🪙 Posisi ${positionLabel(position.id)}`,
-            `💧 Pool ${short(position.pool)}`,
-            `📊 Range bin ${position.lowerBinId}–${position.upperBinId}`,
-            `🎯 Bin aktif ${active ?? "belum tersedia"}`,
-            `🧭 ${positionRangeStatus(active, position.lowerBinId, position.upperBinId)}`,
-            `🔔 Sinyal terakhir: ${signal}`,
+            `${position.ignored ? "⏸ <b>SINYAL EXIT DIABAIKAN</b>" : "🟢 <b>DIPANTAU</b>"} · ${escapeHtml(pair)}`,
+            `🪙 Token <b>${tokenText}</b>`,
+            `🧭 Bin step ${escapeHtml(binStepLabel(position.binStep, position.baseFeePercent))}`,
+            `🪙 Posisi <code>${escapeHtml(position.id)}</code>`,
+            `💧 Pool <code>${escapeHtml(position.pool)}</code>`,
+            `📊 Range bin <b>${position.lowerBinId}–${position.upperBinId}</b>`,
+            `🎯 Bin aktif <b>${active ?? "belum tersedia"}</b>`,
+            `🧭 ${escapeHtml(positionRangeStatus(active, position.lowerBinId, position.upperBinId))}`,
+            `🔔 Sinyal terakhir: ${escapeHtml(signal)}`,
             `🕒 Mulai dipantau: ${wib(position.firstSeenAt)}`,
           ].join("\n");
           return {
@@ -190,8 +254,9 @@ export function createCommandHandler(options: Options) {
             },
           };
         });
-        return { text: `📍 POSISI TERBUKA · ${positions.length}\nGunakan tombol untuk mengatur sinyal exit.\n\n${blocks.map((item) => item.block).join("\n\n──────────────\n\n")}`,
-          replyMarkup: { inline_keyboard: blocks.map((item) => [item.button]) } };
+        return { text: `📍 <b>POSISI TERBUKA</b> · ${positions.length}\nGunakan tombol untuk mengatur sinyal exit.\n\n${blocks.map((item) => item.block).join("\n\n──────────────\n\n")}`,
+          replyMarkup: { inline_keyboard: blocks.map((item) => [item.button]) },
+          parseMode: "HTML" };
       }
       case "/tf": {
         const timeframe = args[0];
@@ -310,10 +375,44 @@ export function createCommandHandler(options: Options) {
   };
 
   const onCallback = async (data: string): Promise<Reply | undefined> => {
+    // Any explicit UI interaction other than requesting typed input means the user moved on.
+    if (!data.startsWith("config:input:")) pendingConfigInput.delete(options.chatId);
     const section = /^config:section:([a-z]+)$/.exec(data);
     if (section) {
       const text = configSectionText(config, section[1]);
-      return text ? { text, replyMarkup: configMenuMarkup } : { text: "Bagian config tidak ditemukan.", replyMarkup: configMenuMarkup };
+      return text
+        ? { text, replyMarkup: configSectionMarkup(section[1]) }
+        : { text: "Bagian config tidak ditemukan.", replyMarkup: configMenuMarkup };
+    }
+    const editPath = /^config:edit:([A-Za-z0-9_.-]+)$/.exec(data);
+    if (editPath) return configEditReply(editPath[1]);
+    const setValue = /^config:set:([A-Za-z0-9_.-]+):(.*)$/.exec(data);
+    if (setValue) {
+      const reply = await applyValidatedConfigUpdate(setValue[1], setValue[2]);
+      return { ...reply, text: reply.text, replyMarkup: reply.text.startsWith("✅") ? configMenuMarkup : configEditReply(setValue[1]).replyMarkup };
+    }
+    const inputPath = /^config:input:([A-Za-z0-9_.-]+)$/.exec(data);
+    if (inputPath) {
+      const path = inputPath[1];
+      if (!editablePaths.has(path)) return { text: "Parameter ini tidak dapat diubah melalui Telegram.", replyMarkup: configMenuMarkup };
+      pendingConfigInput.set(options.chatId, { path, until: Date.now() + configPendingInputMs });
+      return {
+        text: `✏️ KIRIM NILAI BARU\n<code>${escapeHtml(path)}</code>\nNilai saat ini: <b>${escapeHtml(configValueText(configValueAt(config, path)))}</b>\n\nKirim nilainya sekarang (berlaku 5 menit), atau kirim <code>batal</code>.`,
+        replyMarkup: { inline_keyboard: [[{ text: "↩ Batal", callback_data: "config:cancel" }]] },
+        parseMode: "HTML",
+      };
+    }
+    if (data === "config:cancel") {
+      pendingConfigInput.delete(options.chatId);
+      return { text: "Input dibatalkan. Tidak ada config yang berubah.", replyMarkup: configMenuMarkup };
+    }
+    const backPath = /^config:back:([A-Za-z0-9_.-]+)$/.exec(data);
+    if (backPath) {
+      const sectionName = Object.entries(configSections).find(([, entry]) => entry.paths.includes(backPath[1]))?.[0];
+      const text = sectionName ? configSectionText(config, sectionName) : undefined;
+      return text
+        ? { text, replyMarkup: configSectionMarkup(sectionName!) }
+        : { text: "Bagian config tidak ditemukan.", replyMarkup: configMenuMarkup };
     }
     if (data === "golive:cancel") {
       setMeta(db, "golive_confirmation_until", "0");
@@ -350,5 +449,28 @@ export function createCommandHandler(options: Options) {
     return undefined;
   };
 
-  return { onCommand, onCallback };
+  const onText = async (text: string): Promise<Reply | undefined> => {
+    const pending = pendingConfigInput.get(options.chatId);
+    if (!pending) return undefined;
+    const trimmed = text.trim();
+    const label = trimmed.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
+    if (label === "menu" || label === "top trending" || trimmed.startsWith("/")) {
+      // Navigation or a command abandons the pending input, matching callback behavior.
+      pendingConfigInput.delete(options.chatId);
+      return undefined;
+    }
+    if (Date.now() > pending.until) {
+      pendingConfigInput.delete(options.chatId);
+      return { text: "⌛ Waktu input sudah habis. Buka lagi parameternya dari menu Konfigurasi." };
+    }
+    if (!trimmed) return { text: "Kirim nilai baru, atau kirim batal untuk membatalkan." };
+    if (/^batal$/i.test(trimmed)) {
+      pendingConfigInput.delete(options.chatId);
+      return { text: "Input dibatalkan. Tidak ada config yang berubah.", replyMarkup: configMenuMarkup };
+    }
+    pendingConfigInput.delete(options.chatId);
+    return applyValidatedConfigUpdate(pending.path, trimmed);
+  };
+
+  return { onCommand, onCallback, onText };
 }

@@ -95,5 +95,6 @@ await runBot({
   jupiterTokensBaseUrl: config.jupiter.tokens_base_url,
   onCommand: commandHandler.onCommand,
   onCallback: commandHandler.onCallback,
+  onText: commandHandler.onText,
   signal: shutdown.signal,
 });

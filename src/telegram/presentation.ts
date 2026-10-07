@@ -2,6 +2,8 @@ export function notificationCard(title: string, details: string[]): string {
   return [title, "━━━━━━━━━━━━━━━━━━", ...details].join("\n");
 }
 
+
+
 export function positionRangeStatus(activeBin: number | undefined, lowerBin: number, upperBin: number): string {
   if (activeBin === undefined) return "Menunggu data bin aktif";
   if (activeBin < lowerBin) return `Di bawah range · jarak ${lowerBin - activeBin} bin`;

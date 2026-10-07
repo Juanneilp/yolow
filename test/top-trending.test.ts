@@ -11,6 +11,7 @@ const config: TopTrendingConfig = {
   min_holders: 1_000,
   min_tvl_usd: 10_000,
   min_organic_score: 70,
+  volume_window: "24h",
 };
 
 function makePool(mint: string, overrides: Record<string, unknown> = {}) {
@@ -78,7 +79,7 @@ test("deduplicates by mint, keeps the highest-volume DLMM pool, and ranks descen
   const result = selectTopTrending(pools as any[], jupiter, config, now);
   assert.deepEqual(result.map((token) => token.mint), ["first", "second"]);
   assert.equal(result[0].poolAddress, "better-first-pool");
-  assert.equal(result[0].volume24h, 60_000);
+  assert.equal(result[0].volume, 60_000);
 });
 
 test("includes only SOL-quoted pools and never shows stablecoin quote mints as candidates", () => {
@@ -118,6 +119,54 @@ test("renders a Telegram-friendly card and escapes token metadata", () => {
   assert.doesNotMatch(text, /<i>not markup<\/i>/);
   assert.ok(text.includes(`💵 MCap <b>$700.0K</b> 📈 24j $50.0K`));
   assert.ok(text.includes(`CA <code>${mint}</code>\nPool <code>${pool}</code>`));
+});
+
+test("uses the configured volume window for filtering, ranking, and labels", async () => {
+  const originalFetch = globalThis.fetch;
+  const requested: URL[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    requested.push(url);
+    if (url.hostname === "dlmm.datapi.meteora.ag") {
+      return new Response(JSON.stringify({
+        data: [
+          makePool("fast", { volume: { "4h": 90_000, "12h": 100_000, "24h": 110_000 } }),
+          makePool("slow", { volume: { "4h": 10_000, "12h": 500_000, "24h": 900_000 } }),
+        ],
+        pages: 1,
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify([makeJupiter("fast"), makeJupiter("slow")]), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const fourHour = await fetchTopTrending(
+      { ...config, volume_window: "4h" },
+      "test-api-key",
+      "https://dlmm.datapi.meteora.ag",
+      "https://api.jup.ag/tokens/v2",
+    );
+    assert.equal(requested[0].searchParams.get("sort_by"), "volume_4h:desc");
+    assert.deepEqual(fourHour.map((token) => token.mint), ["fast", "slow"]);
+    assert.equal(fourHour[0].volume, 90_000);
+    assert.match(formatTopTrending(fourHour, { ...config, volume_window: "4h" }), /Urut volume 4 jam/);
+    assert.match(formatTopTrending(fourHour, { ...config, volume_window: "4h" }), /📈 4j \$90\.0K/);
+
+    requested.length = 0;
+    const twelveHour = await fetchTopTrending(
+      { ...config, volume_window: "12h" },
+      "test-api-key",
+      "https://dlmm.datapi.meteora.ag",
+      "https://api.jup.ag/tokens/v2",
+    );
+    assert.equal(requested[0].searchParams.get("sort_by"), "volume_12h:desc");
+    assert.deepEqual(twelveHour.map((token) => token.mint), ["slow", "fast"]);
+    assert.equal(twelveHour[0].volume, 500_000);
+    assert.match(formatTopTrending(twelveHour, { ...config, volume_window: "12h" }), /Urut volume 12 jam/);
+    assert.match(formatTopTrending(twelveHour, { ...config, volume_window: "12h" }), /📈 12j \$500\.0K/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("loads Meteora candidates and enriches them with Jupiter and GMGN data", async () => {

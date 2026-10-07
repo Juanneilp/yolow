@@ -12,8 +12,9 @@ type BotOptions = {
   meteoraBaseUrl: string;
   jupiterTokensBaseUrl: string;
   signal?: AbortSignal;
-  onCommand?: (command: string, args: string[]) => Promise<{ text: string; replyMarkup?: Record<string, unknown> } | undefined>;
-  onCallback?: (data: string) => Promise<{ text: string; replyMarkup?: Record<string, unknown> } | undefined>;
+  onCommand?: (command: string, args: string[]) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
+  onCallback?: (data: string) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
+  onText?: (text: string) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
 };
 
 export function actionForMessage(text: string): "menu" | "start" | "top_trending" | undefined {
@@ -140,7 +141,10 @@ export async function runBot(options: BotOptions): Promise<void> {
     );
     const text = formatTopTrending(tokens, options.config);
     const markup = {
-      inline_keyboard: [[{ text: "🏠 Menu", callback_data: "menu" }]],
+      inline_keyboard: [
+        [{ text: "🔄 Refresh", callback_data: "top_trending" }, { text: "⚙️ Filter", callback_data: "config:section:trending" }],
+        [{ text: "🏠 Menu", callback_data: "menu" }],
+      ],
     };
     if (update) await editOrSend(update, text, markup, "HTML");
     else await send(text, markup, "HTML");
@@ -149,8 +153,8 @@ export async function runBot(options: BotOptions): Promise<void> {
   async function showMenu(update?: any): Promise<void> {
     const status = await options.onCommand?.("/status", []);
     const text = `${status?.text ?? "⚡ YOLOW · METEORA DLMM"}\n\nPilih fitur:`;
-    if (update) await editOrSend(update, text, mainMenuMarkup);
-    else await send(text, mainMenuMarkup);
+    if (update) await editOrSend(update, text, mainMenuMarkup, status?.parseMode);
+    else await send(text, mainMenuMarkup, status?.parseMode);
   }
 
   console.log("Yolow Telegram bot is polling.");
@@ -177,18 +181,26 @@ export async function runBot(options: BotOptions): Promise<void> {
               await editOrSend(update, "🧰 DAFTAR COMMAND\n/status · /positions · /history [1–50] · /stats [7d|30d|all]\n/tf [5m|15m|30m|1h] · /export · /toptrending · /config\n/config set <path> <nilai>\n/ignore <position_id> · /unignore <position_id>\n/trade <id|position_id> · /note <id|position_id> <catatan>\n/tag <id|position_id> <tag> · /retryswap <position_id>\n/golive · /menu · /start", mainMenuMarkup);
             } else if (options.onCallback) {
               const reply = await options.onCallback(String(update.callback_query.data ?? ""));
-              if (reply) await editOrSend(update, reply.text, withMenuNavigation(reply.replyMarkup));
+              if (reply) await editOrSend(update, reply.text, withMenuNavigation(reply.replyMarkup), reply.parseMode);
             }
             continue;
           }
 
           const messageText = String(update.message?.text ?? "");
+          const isSlashCommand = messageText.trim().startsWith("/");
+          if (!isSlashCommand && options.onText) {
+            const pendingReply = await options.onText(messageText);
+            if (pendingReply) {
+              await send(pendingReply.text, withMenuNavigation(pendingReply.replyMarkup), pendingReply.parseMode);
+              continue;
+            }
+          }
           const action = actionForMessage(messageText);
           if (action === "menu") {
             await showMenu();
           } else if (action === "start") {
             const status = await options.onCommand?.("/status", []);
-            await send(status?.text ?? "⚡ YOLOW · METEORA DLMM\nPilih fitur melalui Menu.", quickAccessMarkup);
+            await send(status?.text ?? "⚡ YOLOW · METEORA DLMM\nPilih fitur melalui Menu.", quickAccessMarkup, status?.parseMode);
           } else if (action === "top_trending") {
             await showTopTrending();
           } else if (options.onCommand) {
@@ -196,7 +208,7 @@ export async function runBot(options: BotOptions): Promise<void> {
             const command = rawCommand.split("@")[0];
             if (command.startsWith("/")) {
               const reply = await options.onCommand(command, args);
-              if (reply) await send(reply.text, withMenuNavigation(reply.replyMarkup));
+              if (reply) await send(reply.text, withMenuNavigation(reply.replyMarkup), reply.parseMode);
             }
           }
         } catch (error) {
