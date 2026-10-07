@@ -142,6 +142,15 @@ export async function loadSigner(path: string, wallet: PublicKey): Promise<Keypa
   return signer;
 }
 
+export async function simulateLegacyTransaction(connection: Connection, tx: Transaction): Promise<number | undefined> {
+  // SDK Meteora mengembalikan legacy Transaction. Pada @solana/web3.js 1.98.4,
+  // simulateTransaction(legacyTx, { config }) melempar "Invalid arguments" secara sinkron,
+  // sehingga simulasi harus dipanggil tanpa argumen kedua (commitment mengikuti Connection).
+  const simulation = await connection.simulateTransaction(tx);
+  if (simulation.value.err) throw new Error(`Simulasi gagal: ${JSON.stringify(simulation.value.err)}`);
+  return simulation.value.unitsConsumed;
+}
+
 export class CloseExecutor {
   private readonly inFlight = new Set<string>();
   private readonly swapsInFlight = new Set<string>();
@@ -562,8 +571,8 @@ export class CloseExecutor {
     tx.feePayer = this.options.wallet;
     tx.recentBlockhash = blockhash.blockhash;
     if (dryRun) {
-      const simulation = await this.options.connection.simulateTransaction(tx);
-      if (simulation.value.err) throw new Error(`Simulasi gagal: ${JSON.stringify(simulation.value.err)}`);
+      const unitsConsumed = await simulateLegacyTransaction(this.options.connection, tx);
+      console.log(`Dry-run close simulation for ${position.id}: unitsConsumed=${unitsConsumed ?? "unknown"} (limit 1200000)`);
       return {};
     }
     if (!this.signer) throw new Error("Live mode memerlukan AGENT_KEYPAIR_PATH yang valid");
@@ -571,8 +580,7 @@ export class CloseExecutor {
     const signatureBytes = tx.signature;
     if (!signatureBytes) throw new Error("Signature transaksi tidak terbentuk");
     const signature = bs58.encode(signatureBytes);
-    const simulation = await this.options.connection.simulateTransaction(tx, { commitment: "confirmed" });
-    if (simulation.value.err) throw new Error(`Simulasi gagal: ${JSON.stringify(simulation.value.err)}`);
+    await simulateLegacyTransaction(this.options.connection, tx);
     if (!this.isStillEligible(position.id)) throw new SkipClose("Posisi di-ignore sebelum broadcast", "IGNORED");
     this.options.db.prepare(`INSERT INTO transactions(signature,kind,position_id,pool,status,sent_at)
       VALUES(?,'CLOSE',?,?, 'PENDING',?) ON CONFLICT(signature) DO NOTHING`)

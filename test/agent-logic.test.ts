@@ -6,7 +6,29 @@ import { fetchCandleSeries } from "../src/market-data/candles.ts";
 import { indicatorExitSignal, macdHistogram, rsiWilder } from "../src/market-data/indicators.ts";
 import type { Position } from "../src/domain/types.ts";
 import { OorExitEngine } from "../src/triggers/oor-exit.ts";
-import { formatExitTimestamp } from "../src/execution/executor.ts";
+import { formatExitTimestamp, simulateLegacyTransaction } from "../src/execution/executor.ts";
+import { Connection, Keypair, SystemProgram, Transaction } from "@solana/web3.js";
+
+function stubRpc(connection: Connection): void {
+  (connection as unknown as { _rpcRequest: (method: string) => Promise<unknown> })._rpcRequest = async (method: string) => {
+    const base = { jsonrpc: "2.0", id: "test" };
+    if (method === "getLatestBlockhash") {
+      return { ...base, result: { context: { slot: 100 }, value: { blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 999 } } };
+    }
+    if (method === "simulateTransaction") {
+      return { ...base, result: { context: { slot: 100 }, value: { err: null, logs: [], unitsConsumed: 1000 } } };
+    }
+    throw new Error(`unexpected rpc method ${method}`);
+  };
+}
+
+function legacyTransaction(): Transaction {
+  const payer = Keypair.generate().publicKey;
+  const tx = new Transaction();
+  tx.feePayer = payer;
+  tx.add(SystemProgram.transfer({ fromPubkey: payer, toPubkey: Keypair.generate().publicKey, lamports: 1 }));
+  return tx;
+}
 
 const position: Position = {
   id: "position-1", pool: "pool-1", tokenMint: "token-1", quoteMint: "sol",
@@ -58,6 +80,34 @@ test("indicator math handles readiness, Wilder RSI, MACD warm-up, and same-candl
   assert.equal(signal.fired, true);
   assert.equal(signal.rsi, 100);
   assert.equal(signal.bbUpper, 1.5);
+});
+
+test("live close simulation uses the legacy-compatible call and never passes a config object", async () => {
+  const connection = new Connection("https://mainnet.helius-rpc.com", "confirmed");
+  stubRpc(connection);
+  const tx = legacyTransaction();
+
+  // Regression: @solana/web3.js 1.98.4 throws "Invalid arguments" for simulateTransaction(legacyTx, { config }).
+  await assert.rejects(
+    () => connection.simulateTransaction(tx, { commitment: "confirmed" }),
+    /Invalid arguments/,
+    "web3.js must reject a config object for legacy transactions; the helper exists because of this",
+  );
+
+  // The helper must simulate the same legacy transaction without throwing and report CU usage.
+  assert.equal(await simulateLegacyTransaction(connection, tx), 1000);
+});
+
+test("legacy simulation surfaces a failed simulation error", async () => {
+  const connection = new Connection("https://mainnet.helius-rpc.com", "confirmed");
+  (connection as unknown as { _rpcRequest: (method: string) => Promise<unknown> })._rpcRequest = async (method: string) => {
+    const base = { jsonrpc: "2.0", id: "test" };
+    if (method === "getLatestBlockhash") {
+      return { ...base, result: { context: { slot: 100 }, value: { blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 999 } } };
+    }
+    return { ...base, result: { context: { slot: 100 }, value: { err: { InstructionError: [0, "Custom"] }, logs: [], unitsConsumed: 1000 } } };
+  };
+  await assert.rejects(() => simulateLegacyTransaction(connection, legacyTransaction()), /Simulasi gagal/);
 });
 
 test("Meteora candle history is chunked and 5m rows aggregate to finalized 15m candles", async () => {
