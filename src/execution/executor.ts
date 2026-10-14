@@ -1,15 +1,17 @@
 import DLMM from "../meteora.ts";
+import { jupiterTransactionInstructions, validateJupiterSource, validateJupiterWritableAccounts, type JupiterBuild } from "./jupiter.ts";
+export { jupiterTransactionInstructions } from "./jupiter.ts";
 import BN from "bn.js";
 import bs58 from "bs58";
 import {
   ComputeBudgetProgram, Keypair, PublicKey,
-  TransactionInstruction, TransactionMessage, VersionedTransaction,
+  TransactionMessage, VersionedTransaction,
   type Connection, type Transaction,
 } from "@solana/web3.js";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppConfig } from "../config/config.ts";
-import type { Position, Trigger } from "../domain/types.ts";
+import type { Position, Timeframe, Trigger } from "../domain/types.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { getMeta, setMeta } from "../storage/db.ts";
 import { discoverPositions, listPositions } from "../positions/monitor.ts";
@@ -17,20 +19,17 @@ import { persistTradeCsv } from "../journal/export.ts";
 import { join } from "node:path";
 import { readJsonResponse, safeError } from "../security.ts";
 import { notificationCard, triggerReasonLabel } from "../telegram/presentation.ts";
+import { assertFreshCandle } from "../market-data/candles.ts";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
-const JUPITER_SWAP_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
-const ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-const TOKEN_PROGRAM_IDS = new Set([
-  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-]);
 
 class SkipClose extends Error {
   constructor(message: string, readonly outcome: string) { super(message); }
 }
 
 class UnknownBroadcast extends Error {}
+
+class MetadataPending extends Error {}
 
 export function formatExitTimestamp(epoch: number, timezone: string): string {
   return new Intl.DateTimeFormat("id-ID", {
@@ -49,81 +48,6 @@ type Options = {
   keypairPath?: string;
   keypair?: Keypair;
 };
-
-type JupiterInstruction = {
-  programId: string;
-  accounts: Array<{ pubkey: string; isSigner: boolean; isWritable: boolean }>;
-  data: string;
-};
-
-type JupiterBuild = {
-  inputMint?: string;
-  outputMint?: string;
-  inAmount?: string;
-  outAmount?: string;
-  otherAmountThreshold?: string;
-  slippageBps?: number;
-  swapMode?: string;
-  priceImpact?: number;
-  priceImpactPct?: string;
-  error?: string;
-  errorMessage?: string;
-  setupInstructions?: JupiterInstruction[];
-  swapInstruction?: JupiterInstruction;
-  cleanupInstruction?: JupiterInstruction | null;
-  otherInstructions?: JupiterInstruction[];
-  tipInstruction?: JupiterInstruction | null;
-  addressesByLookupTableAddress?: Record<string, string[]> | null;
-  blockhashWithMetadata?: { blockhash: number[]; lastValidBlockHeight: number };
-};
-
-function toJupiterInstruction(instruction: JupiterInstruction, wallet: PublicKey, allowedPrograms: Set<string>): TransactionInstruction {
-  if (!instruction || typeof instruction.programId !== "string" || !Array.isArray(instruction.accounts) ||
-      instruction.accounts.length > 256 || typeof instruction.data !== "string" ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(instruction.data)) {
-    throw new Error("Jupiter mengembalikan instruksi dengan format tidak valid");
-  }
-  if (!allowedPrograms.has(instruction.programId)) throw new Error("Jupiter mengembalikan program swap yang tidak diizinkan");
-  for (const account of instruction.accounts) {
-    if (typeof account?.pubkey !== "string" || typeof account.isSigner !== "boolean" || typeof account.isWritable !== "boolean") {
-      throw new Error("Jupiter mengembalikan account meta dengan format tidak valid");
-    }
-    if (account.isSigner && account.pubkey !== wallet.toBase58()) throw new Error("Jupiter meminta signer selain wallet agent");
-  }
-  if (Buffer.from(instruction.data, "base64").byteLength > 1232) throw new Error("Data instruksi Jupiter melebihi batas transaksi");
-  return new TransactionInstruction({
-    programId: new PublicKey(instruction.programId),
-    keys: instruction.accounts.map((account) => ({
-      pubkey: new PublicKey(account.pubkey),
-      isSigner: account.isSigner,
-      isWritable: account.isWritable,
-    })),
-    data: Buffer.from(instruction.data, "base64"),
-  });
-}
-
-export function jupiterTransactionInstructions(build: JupiterBuild, wallet: PublicKey): TransactionInstruction[] {
-  const setup = build.setupInstructions ?? [];
-  if (!Array.isArray(setup) || setup.length > 8 || (build.otherInstructions?.length ?? 0) !== 0 || build.tipInstruction) {
-    throw new Error("Jupiter mengembalikan instruksi tambahan yang tidak diizinkan");
-  }
-  const instructions = setup.map((instruction) => {
-    const result = toJupiterInstruction(instruction, wallet, new Set([ASSOCIATED_TOKEN_PROGRAM_ID]));
-    if (result.keys.length < 6 || !result.keys[0].pubkey.equals(wallet) || !result.keys[0].isSigner ||
-        !result.keys[2].pubkey.equals(wallet)) throw new Error("Jupiter setup harus membuat ATA milik wallet agent");
-    return result;
-  });
-  instructions.push(toJupiterInstruction(build.swapInstruction!, wallet, new Set([JUPITER_SWAP_PROGRAM_ID])));
-  if (build.cleanupInstruction) {
-    const cleanup = toJupiterInstruction(build.cleanupInstruction, wallet, TOKEN_PROGRAM_IDS);
-    if (cleanup.keys.length < 3 || !cleanup.keys[1].pubkey.equals(wallet) || !cleanup.keys[2].pubkey.equals(wallet) || !cleanup.keys[2].isSigner) {
-      throw new Error("Jupiter cleanup harus mengembalikan akun token ke wallet agent");
-    }
-    instructions.push(cleanup);
-  }
-  if (instructions.length > 10) throw new Error("Jupiter mengembalikan terlalu banyak instruksi");
-  return instructions;
-}
 
 export async function loadSigner(path: string, wallet: PublicKey): Promise<Keypair> {
   const resolvedPath = await realpath(resolve(path));
@@ -177,6 +101,8 @@ export class CloseExecutor {
       } else if (chain?.err) {
         this.options.db.prepare("UPDATE transactions SET status='FAILED',error=?,confirmed_at=COALESCE(confirmed_at,?) WHERE signature=?")
           .run(JSON.stringify(chain.err), Date.now(), transaction.signature);
+        if (transaction.kind === "SWAP") this.options.db.prepare("UPDATE swaps SET status='FAILED',error=?,updated_at=? WHERE signature=?")
+          .run(JSON.stringify(chain.err), Date.now(), transaction.signature);
       } else {
         this.options.db.prepare("UPDATE transactions SET status='UNKNOWN' WHERE signature=?").run(transaction.signature);
       }
@@ -184,36 +110,72 @@ export class CloseExecutor {
 
     const swaps = this.options.db.prepare(`SELECT t.signature,t.position_id FROM transactions t
       WHERE t.kind='SWAP' AND t.status='CONFIRMED'`).all() as Array<{ signature: string; position_id: string }>;
-    for (const swap of swaps) await this.reconcileSwap(swap.signature, swap.position_id);
+    for (const swap of swaps) {
+      try { await this.reconcileSwap(swap.signature, swap.position_id); }
+      catch (error) {
+        if (!(error instanceof MetadataPending)) throw error;
+        await this.deferMetadata(swap.position_id, safeError(error));
+      }
+    }
 
     await discoverPositions(this.options.connection, this.options.wallet, this.options.db);
     const closed = listPositions(this.options.db, false).filter((position) => position.state === "CLOSED");
-    for (const position of closed) await this.reconcileClose(position);
+    for (const position of closed) {
+      try { await this.reconcileClose(position); }
+      catch (error) {
+        if (!(error instanceof MetadataPending)) throw error;
+        await this.deferMetadata(position.id, safeError(error));
+      }
+    }
   }
 
   private async reconcileSwap(signature: string, positionId: string): Promise<void> {
-    const trade = this.options.db.prepare("SELECT swap_signature,swap_status FROM trade_history WHERE position_id=?")
-      .get(positionId) as { swap_signature: string | null; swap_status: string | null } | undefined;
-    if (trade?.swap_signature === signature && trade.swap_status === "CONFIRMED") return;
-    const swap = this.options.db.prepare("SELECT * FROM swaps WHERE signature=?").get(signature) as Record<string, any> | undefined;
-    const deltas = await this.transactionDeltas(signature, SOL_MINT);
-    const actualSol = deltas.solDelta > 0n ? Number(deltas.solDelta) / 1e9 : null;
-    this.options.db.prepare("UPDATE swaps SET status='CONFIRMED',sol_received_lamports=?,updated_at=? WHERE signature=?")
-      .run(deltas.solDelta > 0n ? deltas.solDelta.toString() : null, Date.now(), signature);
-    this.options.db.prepare(`UPDATE trade_history SET swap_status='CONFIRMED',swap_signature=?,swap_input_mint=COALESCE(?,swap_input_mint),
-      swap_sol_received=?,total_sol_returned=COALESCE(sol_received,0)+COALESCE(?,0),finalized_at=? WHERE position_id=?`)
-      .run(signature, swap?.input_mint ?? null, actualSol, actualSol, Date.now(), positionId);
-    if (trade?.swap_signature !== signature) {
-      this.options.db.prepare("UPDATE trade_history SET network_fees_sol=COALESCE(network_fees_sol,0)+? WHERE position_id=?")
-        .run(Number(deltas.feeLamports) / 1e9, positionId);
-    }
+    const swap = this.options.db.prepare("SELECT sol_received_lamports FROM swaps WHERE signature=?").get(signature) as { sol_received_lamports: string | null } | undefined;
+    if (!swap) throw new MetadataPending(`Catatan input swap ${signature} belum tersedia; retry ditolak`);
+    if (swap.sol_received_lamports !== null) return;
+    this.options.db.prepare("UPDATE swaps SET status='CONFIRMED',updated_at=? WHERE signature=?").run(Date.now(), signature);
+    this.recordSwap(signature, positionId, await this.transactionDeltas(signature, SOL_MINT));
+  }
+
+  private recordSwap(signature: string, positionId: string, deltas: { solDelta: bigint; feeLamports: bigint }): void {
+    const db = this.options.db;
+    const swap = db.prepare("SELECT * FROM swaps WHERE signature=?").get(signature) as Record<string, any>;
+    if (swap.sol_received_lamports !== null) return;
+    const previous = db.prepare(`SELECT signature,MAX(sol_received_lamports) AS amount FROM swaps
+      WHERE position_id=? AND status='CONFIRMED' AND sol_received_lamports IS NOT NULL AND signature<>? GROUP BY signature`)
+      .all(positionId, signature) as Array<{ amount: string }>;
+    const total = previous.reduce((sum, row) => sum + BigInt(row.amount), deltas.solDelta);
+    const quote = Number(swap.quoted_sol_lamports ?? 0);
+    const slippage = quote > 0 ? (quote - Number(deltas.solDelta)) / quote * 10_000 : null;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("UPDATE swaps SET status='CONFIRMED',sol_received_lamports=?,updated_at=? WHERE signature=?")
+        .run(deltas.solDelta.toString(), Date.now(), signature);
+      db.prepare(`UPDATE trade_history SET swap_status='CONFIRMED',swap_signature=?,swap_input_mint=?,swap_sol_received=?,
+        swap_slippage=?,swap_price_impact=?,total_sol_returned=COALESCE(sol_received,0)+?,
+        network_fees_sol=COALESCE(network_fees_sol,0)+?,finalized_at=? WHERE position_id=?`)
+        .run(signature, swap.input_mint, Number(total) / 1e9, slippage, swap.price_impact,
+          Number(total) / 1e9, Number(deltas.feeLamports) / 1e9, Date.now(), positionId);
+      db.prepare("INSERT INTO trade_events(trade_id,at,type,payload) SELECT trade_id,?,'SWAP_CONFIRMED',? FROM trade_history WHERE position_id=?")
+        .run(Date.now(), JSON.stringify({ signature, receivedLamports: deltas.solDelta.toString() }), positionId);
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
     this.updatePnl(positionId);
   }
 
   private async reconcileClose(position: Position): Promise<void> {
-    const trade = this.options.db.prepare("SELECT * FROM trade_history WHERE position_id=?")
+    let trade = this.options.db.prepare("SELECT * FROM trade_history WHERE position_id=?")
       .get(position.id) as Record<string, any> | undefined;
+    if (trade?.mode === "dry_run" && this.options.db.prepare("SELECT 1 FROM transactions WHERE position_id=? AND kind='CLOSE' AND status='CONFIRMED'").get(position.id)) {
+      this.promoteTrade(position.id);
+      trade = this.options.db.prepare("SELECT * FROM trade_history WHERE position_id=?").get(position.id) as Record<string, any>;
+    }
     if (!trade || trade.finalized_at !== null) return;
+    const swapMetadataPending = this.options.db.prepare(`SELECT 1 FROM transactions t
+      WHERE t.position_id=? AND t.kind='SWAP' AND t.status='CONFIRMED'
+      AND NOT EXISTS (SELECT 1 FROM swaps s WHERE s.signature=t.signature AND s.sol_received_lamports IS NOT NULL) LIMIT 1`)
+      .get(position.id);
+    if (swapMetadataPending) return;
     const unsettled = this.options.db.prepare("SELECT 1 AS present FROM transactions WHERE position_id=? AND kind='CLOSE' AND status IN ('PENDING','UNKNOWN') LIMIT 1")
       .get(position.id);
     if (unsettled) return;
@@ -248,7 +210,7 @@ export class CloseExecutor {
           Number(solAmount) / 1e9, token.toString(), Number(fees) / 1e9, metrics.duration, metrics.inRangePct,
           metrics.mfe, metrics.mae, metrics.maxDrawdown, metrics.maxActiveBin, metrics.minActiveBin,
           metrics.rangeExits, Number(solAmount) / 1e9, position.id);
-      result = { position_id: position.id, token_received: token.toString(), sol_received_lamports: solAmount.toString(), signature };
+      result = { position_id: position.id, token_received: token.toString(), sol_received_lamports: solAmount.toString(), signature, created_at: closedAt };
     }
     setMeta(this.options.db, "close_failures", "0");
     setMeta(this.options.db, "close_failures_at", "0");
@@ -282,10 +244,13 @@ export class CloseExecutor {
         .run(this.options.config.swap.enabled ? "SKIPPED_NO_TOKEN" : "SKIPPED_DISABLED", Date.now(), position.id);
       this.updatePnl(position.id);
     } else {
-      const previousSwap = this.options.db.prepare("SELECT status FROM swaps WHERE position_id=? ORDER BY id DESC LIMIT 1")
-        .get(position.id) as { status: string } | undefined;
+      const previousSwap = this.options.db.prepare("SELECT status FROM swaps WHERE position_id=? AND close_signature=? ORDER BY id DESC LIMIT 1")
+        .get(position.id, result.signature) as { status: string } | undefined;
       if (previousSwap && ["PENDING", "UNKNOWN"].includes(previousSwap.status)) return;
-      if (!previousSwap) await this.finishSwap(position, tokens, false, result.signature ?? undefined);
+      if (!previousSwap) {
+        if (this.isDryRun()) return;
+        await this.finishSwap(position, tokens, false, result.signature ?? undefined);
+      }
       else {
         this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
           .run(previousSwap.status, Date.now(), position.id);
@@ -317,22 +282,81 @@ export class CloseExecutor {
       pool: fallback.pool, reason: fallback.reason, detectedAt: fallback.detected_at, confirmedAt: fallback.confirmed_at, detail: JSON.parse(fallback.detail) };
   }
 
+  private assertFreshTrigger(trigger: Trigger): void {
+    if (trigger.reason !== "INDICATOR") return;
+    const timeframe = trigger.detail.timeframe as Timeframe;
+    try { assertFreshCandle(Number(trigger.detail.candleTime), timeframe, this.options.config.candles); }
+    catch (error) { throw new SkipClose(safeError(error), "STALE_CANDLE"); }
+  }
+
+  private promoteTrade(positionId: string): void {
+    const db = this.options.db;
+    const trade = db.prepare("SELECT * FROM trade_history WHERE position_id=?").get(positionId) as Record<string, any> | undefined;
+    if (trade?.mode !== "dry_run") return;
+    const candles = db.prepare("SELECT * FROM trade_candles WHERE trade_id=?").all(trade.trade_id);
+    const marks = db.prepare("SELECT * FROM post_exit_marks WHERE trade_id=?").all(trade.trade_id);
+    const clear = Object.keys(trade).filter((key) => key.startsWith("exit_") || key.startsWith("swap_") ||
+      ["trigger_reason", "trigger_detail", "close_signature", "sol_received", "tokens_received", "network_fees_sol",
+        "remaining_dust_usd", "total_sol_returned", "pnl_sol", "pnl_pct", "pnl_usd", "pnl_reason", "duration_sec",
+        "time_in_range_pct", "mfe_sol", "mae_sol", "max_drawdown_pct", "max_active_bin", "min_active_bin", "range_exit_count", "finalized_at"].includes(key));
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("INSERT INTO trade_events(trade_id,at,type,payload) VALUES(?,?,'DRY_RUN_ARCHIVED',?)")
+        .run(trade.trade_id, Date.now(), JSON.stringify({ trade, candles, marks }));
+      db.prepare(`UPDATE trade_history SET mode='live',${clear.map((key) => `${key}=NULL`).join(",")} WHERE position_id=?`).run(positionId);
+      db.prepare("DELETE FROM trade_candles WHERE trade_id=?").run(trade.trade_id);
+      db.prepare("DELETE FROM post_exit_marks WHERE trade_id=?").run(trade.trade_id);
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+  }
+
+  private async deferMetadata(positionId: string, reason: string): Promise<void> {
+    const db = this.options.db;
+    const previous = db.prepare("SELECT swap_status FROM trade_history WHERE position_id=?").get(positionId) as { swap_status: string } | undefined;
+    db.prepare("UPDATE trade_history SET swap_status='WAITING_METADATA',finalized_at=NULL WHERE position_id=?").run(positionId);
+    if (previous?.swap_status === "WAITING_METADATA") return;
+    db.prepare("INSERT INTO trade_events(trade_id,at,type,payload) SELECT trade_id,?,'METADATA_PENDING',? FROM trade_history WHERE position_id=?")
+      .run(Date.now(), JSON.stringify({ reason }), positionId);
+    await this.options.notify(notificationCard("⏳ MENUNGGU METADATA TRANSAKSI", [
+      `Posisi ${positionId}`, reason, "Signature tetap tersimpan. Yolow akan membaca ulang hasil tanpa mengirim ulang transaksi.",
+    ]));
+  }
+
   async retrySwap(positionId: string): Promise<void> {
     if (this.swapsInFlight.has(positionId)) throw new Error("Swap untuk posisi ini sedang berjalan.");
-    const failed = this.options.db.prepare(`SELECT input_amount,close_signature FROM swaps
-      WHERE position_id=? AND status IN ('NO_ROUTE','FAILED') ORDER BY id DESC LIMIT 1`)
-      .get(positionId) as { input_amount: string; close_signature: string | null } | undefined;
-    if (!failed) throw new Error("Tidak ada swap NO_ROUTE/FAILED untuk posisi ini.");
+    const latest = this.options.db.prepare("SELECT status,close_signature FROM swaps WHERE position_id=? ORDER BY id DESC LIMIT 1")
+      .get(positionId) as { status: string; close_signature: string | null } | undefined;
+    if (!latest || !["NO_ROUTE", "FAILED"].includes(latest.status)) throw new Error("Percobaan swap terbaru bukan NO_ROUTE/FAILED; retry ditolak.");
     if (!this.options.config.swap.enabled) throw new Error("swap.enabled sedang nonaktif.");
     if (!this.isDryRun() && !this.signer) throw new Error("Live mode memerlukan signer yang valid.");
     const position = listPositions(this.options.db, false).find((item) => item.id === positionId);
     if (!position) throw new Error("Posisi tidak ditemukan di journal.");
+    if (!latest.close_signature) throw new Error("Retry memerlukan hasil close live terkonfirmasi.");
+    await this.finishSwap(position, 0n, this.isDryRun(), latest.close_signature, true);
+  }
+
+  private async remainingSwapAmount(position: Position, closeSignature: string): Promise<bigint> {
+    const unresolved = this.options.db.prepare(`SELECT 1 FROM transactions WHERE position_id=? AND status IN ('PENDING','UNKNOWN')
+      UNION ALL SELECT 1 FROM swaps WHERE position_id=? AND status IN ('PENDING','UNKNOWN') LIMIT 1`).get(position.id, position.id);
+    if (unresolved) throw new Error("Transaksi posisi belum selesai; retry swap ditolak.");
+    const missingInput = this.options.db.prepare(`SELECT 1 FROM transactions t WHERE t.position_id=? AND t.kind='SWAP' AND t.status='CONFIRMED'
+      AND NOT EXISTS (SELECT 1 FROM swaps s WHERE s.signature=t.signature) LIMIT 1`).get(position.id);
+    if (missingInput) throw new Error("Catatan input swap terkonfirmasi belum tersedia; retry ditolak.");
+    const result = this.options.db.prepare(`SELECT token_received,token_mint FROM close_results
+      WHERE position_id=? AND signature=? AND mode='live' AND status='CONFIRMED' ORDER BY created_at DESC LIMIT 1`)
+      .get(position.id, closeSignature) as { token_received: string | null; token_mint: string } | undefined;
+    const confirmedClose = this.options.db.prepare("SELECT 1 FROM transactions WHERE signature=? AND position_id=? AND kind='CLOSE' AND status='CONFIRMED'")
+      .get(closeSignature, position.id);
+    if (!result?.token_received || result.token_mint !== position.tokenMint || !confirmedClose) throw new Error("Hasil close terkonfirmasi belum tersedia.");
+    const sold = this.options.db.prepare(`SELECT s.signature,MAX(s.input_amount) AS input_amount FROM swaps s
+      JOIN transactions t ON t.signature=s.signature WHERE s.position_id=? AND t.kind='SWAP' AND t.status='CONFIRMED'
+      GROUP BY s.signature`).all(position.id) as Array<{ input_amount: string }>;
+    const remaining = BigInt(result.token_received) - sold.reduce((sum, swap) => sum + BigInt(swap.input_amount), 0n);
+    if (remaining <= 0n) throw new Error("Seluruh token hasil close sudah ditukar; retry ditolak.");
     const accounts = await this.options.connection.getParsedTokenAccountsByOwner(this.options.wallet, { mint: new PublicKey(position.tokenMint) }, "confirmed");
     const balance = accounts.value.reduce((sum, account) => sum + BigInt(account.account.data.parsed.info.tokenAmount.amount), 0n);
-    const amount = balance < BigInt(failed.input_amount) ? balance : BigInt(failed.input_amount);
-    if (amount <= 0n) throw new Error("Tidak ada token dari close tersebut yang tersisa di wallet.");
-    if (this.swapsInFlight.has(positionId)) throw new Error("Swap untuk posisi ini sedang berjalan.");
-    await this.finishSwap(position, amount, this.isDryRun(), failed.close_signature ?? undefined);
+    if (balance <= 0n) throw new Error("Tidak ada token hasil close tersisa di wallet.");
+    return balance < remaining ? balance : remaining;
   }
 
   async execute(trigger: Trigger): Promise<number> {
@@ -341,6 +365,10 @@ export class CloseExecutor {
     try { return await this.closePosition(trigger); }
     catch (error) {
       const reason = safeError(error);
+      if (error instanceof MetadataPending) {
+        await this.deferMetadata(trigger.positionId, reason);
+        return 30_000;
+      }
       if (error instanceof SkipClose) {
         this.markTrigger(trigger, error.outcome);
         await this.options.notify(notificationCard("ℹ️ CLOSE DILEWATI", [
@@ -377,8 +405,14 @@ export class CloseExecutor {
     const position = listPositions(this.options.db).find((item) => item.id === trigger.positionId);
     if (!position) { this.markTrigger(trigger, "POSITION_CLOSED"); return 0; }
     if (position.ignored) { this.markTrigger(trigger, "IGNORED"); return 0; }
-    const trade = this.options.db.prepare("SELECT finalized_at FROM trade_history WHERE position_id=?").get(position.id) as { finalized_at: number | null } | undefined;
-    if (trade?.finalized_at) { this.markTrigger(trigger, "ALREADY_FINALIZED"); return 0; }
+    const trade = this.options.db.prepare("SELECT mode,finalized_at,swap_status FROM trade_history WHERE position_id=?")
+      .get(position.id) as { mode: string; finalized_at: number | null; swap_status: string | null } | undefined;
+    if (trade?.swap_status === "WAITING_METADATA") return 30_000;
+    const completed = this.options.db.prepare("SELECT 1 FROM close_results WHERE position_id=? AND mode='live' AND status='CONFIRMED' LIMIT 1").get(position.id);
+    if (completed || (trade?.mode === (this.isDryRun() ? "dry_run" : "live") && trade.finalized_at !== null)) {
+      this.markTrigger(trigger, "ALREADY_FINALIZED"); return 0;
+    }
+    this.assertFreshTrigger(trigger);
     const unresolved = this.options.db.prepare("SELECT signature FROM transactions WHERE position_id=? AND kind='CLOSE' AND status IN ('PENDING','UNKNOWN') LIMIT 1")
       .get(position.id) as { signature: string } | undefined;
     if (unresolved) { this.markTrigger(trigger, "CLOSE_PENDING"); return 300_000; }
@@ -405,6 +439,7 @@ export class CloseExecutor {
     let currentPosition = await pool.getPosition(new PublicKey(position.id));
     if (!currentPosition.positionData.owner.equals(this.options.wallet)) throw new Error("Posisi tidak dimiliki wallet agent");
     const dryRun = this.isDryRun();
+    if (!dryRun) this.promoteTrade(position.id);
     await this.options.notify(notificationCard(
       dryRun ? "🟡 SIMULASI CLOSE DIMULAI" : "🔴 CLOSE DIMULAI",
       [
@@ -438,9 +473,6 @@ export class CloseExecutor {
           await this.addPriorityFee(tx);
           const result = await this.submit(tx, position, trigger, dryRun);
           if (result.signature) sent.push(result.signature);
-          tokenReceived += result.tokenDelta ?? 0n;
-          solReceivedLamports += result.solDelta ?? 0n;
-          feesLamports += result.feeLamports ?? 0n;
         }
         lastFailure = undefined;
         break;
@@ -458,11 +490,20 @@ export class CloseExecutor {
     this.markTrigger(trigger, dryRun ? "DRY_RUN" : "EXECUTED");
     if (!dryRun) this.options.db.prepare("UPDATE positions SET state='CLOSED',closed_at=?,last_checked=? WHERE id=?")
       .run(Date.now(), Date.now(), position.id);
-    this.options.db.prepare(`INSERT INTO close_results(position_id,trigger_id,token_mint,signature,mode,status,created_at)
-      VALUES(?,?,?,?,?,?,?)`).run(position.id, this.triggerId(trigger), position.tokenMint, sent.at(-1) ?? null,
-      dryRun ? "dry_run" : "live", dryRun ? "DRY_RUN" : "CONFIRMED", Date.now());
-    this.options.db.prepare("UPDATE close_results SET token_received=?,sol_received_lamports=? WHERE position_id=? AND created_at=(SELECT max(created_at) FROM close_results WHERE position_id=?)")
-      .run(tokenReceived.toString(), solReceivedLamports.toString(), position.id, position.id);
+    if (!dryRun) {
+      const confirmed = this.options.db.prepare("SELECT signature FROM transactions WHERE position_id=? AND kind='CLOSE' AND status='CONFIRMED' ORDER BY sent_at")
+        .all(position.id) as Array<{ signature: string }>;
+      sent = confirmed.map((row) => row.signature);
+      for (const row of confirmed) {
+        const delta = await this.transactionDeltas(row.signature, position.tokenMint);
+        tokenReceived += delta.tokenDelta;
+        solReceivedLamports += delta.solDelta;
+        feesLamports += delta.feeLamports;
+      }
+    }
+    this.options.db.prepare(`INSERT INTO close_results(position_id,trigger_id,token_mint,signature,mode,status,created_at,token_received,sol_received_lamports)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(position.id, this.triggerId(trigger), position.tokenMint, sent.at(-1) ?? null,
+      dryRun ? "dry_run" : "live", dryRun ? "DRY_RUN" : "CONFIRMED", Date.now(), tokenReceived.toString(), solReceivedLamports.toString());
     const closedAt = Date.now();
     const closeSol = Number(solReceivedLamports) / 1e9;
     const metrics = this.positionMetrics(position.id, closedAt);
@@ -566,7 +607,7 @@ export class CloseExecutor {
     );
   }
 
-  private async submit(tx: Transaction, position: Position, trigger: Trigger, dryRun: boolean): Promise<{ signature?: string; tokenDelta?: bigint; solDelta?: bigint; feeLamports?: bigint }> {
+  private async submit(tx: Transaction, position: Position, trigger: Trigger, dryRun: boolean): Promise<{ signature?: string }> {
     const blockhash = await this.options.connection.getLatestBlockhash("confirmed");
     tx.feePayer = this.options.wallet;
     tx.recentBlockhash = blockhash.blockhash;
@@ -581,6 +622,7 @@ export class CloseExecutor {
     if (!signatureBytes) throw new Error("Signature transaksi tidak terbentuk");
     const signature = bs58.encode(signatureBytes);
     await simulateLegacyTransaction(this.options.connection, tx);
+    this.assertFreshTrigger(trigger);
     if (!this.isStillEligible(position.id)) throw new SkipClose("Posisi di-ignore sebelum broadcast", "IGNORED");
     this.options.db.prepare(`INSERT INTO transactions(signature,kind,position_id,pool,status,sent_at)
       VALUES(?,'CLOSE',?,?, 'PENDING',?) ON CONFLICT(signature) DO NOTHING`)
@@ -605,13 +647,13 @@ export class CloseExecutor {
         throw new Error(`Transaction failed: ${JSON.stringify(result.value.err)}`);
       }
       this.options.db.prepare("UPDATE transactions SET status='CONFIRMED',confirmed_at=? WHERE signature=?").run(Date.now(), signature);
-      return { signature, ...await this.transactionDeltas(signature, position.tokenMint) };
+      return { signature };
     } catch (error) {
       const status = await this.options.connection.getSignatureStatuses([signature]).catch(() => null);
       const chainStatus = status?.value[0];
       if (chainStatus && (chainStatus.confirmationStatus === "confirmed" || chainStatus.confirmationStatus === "finalized") && chainStatus.err === null) {
         this.options.db.prepare("UPDATE transactions SET status='CONFIRMED',confirmed_at=? WHERE signature=?").run(Date.now(), signature);
-        return { signature, ...await this.transactionDeltas(signature, position.tokenMint) };
+        return { signature };
       }
       if (chainStatus?.err) {
         this.options.db.prepare("UPDATE transactions SET status='FAILED',error=?,confirmed_at=? WHERE signature=?")
@@ -708,13 +750,24 @@ export class CloseExecutor {
       if (!tx) await new Promise((resolve) => setTimeout(resolve, 500));
     }
     const meta = tx?.meta;
-    if (!meta) return { tokenDelta: 0n, solDelta: 0n, feeLamports: 0n };
-    const tokenTotal = (balances: any[] | null | undefined) => (balances ?? []).filter((balance) => balance.mint === tokenMint && (!balance.owner || balance.owner === this.options.wallet.toBase58()))
+    if (!meta || meta.err || !Array.isArray(meta.preBalances) || !Array.isArray(meta.postBalances) ||
+        !Array.isArray(meta.preTokenBalances) || !Array.isArray(meta.postTokenBalances)) {
+      throw new MetadataPending(`Metadata transaksi ${signature} belum tersedia; hasil belum difinalisasi`);
+    }
+    for (const balance of [...meta.preTokenBalances, ...meta.postTokenBalances]) {
+      if (balance.mint === tokenMint && (typeof balance.owner !== "string" ||
+          typeof balance.uiTokenAmount?.amount !== "string" || !/^\d{1,20}$/.test(balance.uiTokenAmount.amount))) {
+        throw new MetadataPending(`Metadata token ${signature} belum lengkap`);
+      }
+    }
+    const tokenTotal = (balances: any[] | null | undefined) => (balances ?? []).filter((balance) => balance.mint === tokenMint && balance.owner === this.options.wallet.toBase58())
       .reduce((sum, balance) => sum + BigInt(balance.uiTokenAmount.amount), 0n);
     const tokenDelta = tokenTotal(meta.postTokenBalances) - tokenTotal(meta.preTokenBalances);
     const keys: any[] = tx.transaction.message.staticAccountKeys ?? tx.transaction.message.accountKeys ?? [];
     const walletIndex = keys.findIndex((key) => String(key) === this.options.wallet.toBase58());
-    const solDelta = walletIndex < 0 ? 0n : BigInt(meta.postBalances[walletIndex] - meta.preBalances[walletIndex] + meta.fee);
+    if (walletIndex < 0 || !Number.isSafeInteger(meta.preBalances[walletIndex]) || !Number.isSafeInteger(meta.postBalances[walletIndex]) ||
+        !Number.isSafeInteger(meta.fee)) throw new MetadataPending(`Metadata saldo wallet ${signature} belum lengkap`);
+    const solDelta = BigInt(meta.postBalances[walletIndex] - meta.preBalances[walletIndex] + meta.fee);
     return { tokenDelta: tokenDelta > 0n ? tokenDelta : 0n, solDelta: solDelta > 0n ? solDelta : 0n, feeLamports: BigInt(meta.fee ?? 0) };
   }
 
@@ -780,6 +833,19 @@ export class CloseExecutor {
         lastError = "Jupiter mengembalikan quote yang tidak cocok dengan input swap";
         continue;
       }
+      let instructions;
+      try {
+        const inputTokenProgram = dryRun
+          ? (await this.options.connection.getAccountInfo(new PublicKey(position.tokenMint), "confirmed"))?.owner
+          : await validateJupiterSource(this.options.connection, this.options.wallet, position.tokenMint);
+        if (!inputTokenProgram) throw new Error("Mint sumber tidak ditemukan");
+        instructions = jupiterTransactionInstructions(build, this.options.wallet, {
+          inputMint: position.tokenMint, amount: tokenAmount, slippageBps: slippage, inputTokenProgram,
+        });
+        if (!dryRun) await validateJupiterWritableAccounts(this.options.connection, this.options.wallet, {
+          inputMint: position.tokenMint, amount: tokenAmount, slippageBps: slippage, inputTokenProgram,
+        }, instructions);
+      } catch (error) { lastError = safeError(error); continue; }
       const priceImpact = Number(build.priceImpact ?? (Number(build.priceImpactPct ?? 0) * 100));
       if (!Number.isFinite(priceImpact) || priceImpact < 0 || priceImpact > 100) {
         lastError = "Jupiter mengembalikan price impact yang tidak valid";
@@ -825,7 +891,6 @@ export class CloseExecutor {
       try {
         const configuredMicroLamports = Number(this.options.config.execution.priority_fee.microlamports);
         const capMicroLamports = Number(this.options.config.execution.priority_fee.max_cap_microlamports);
-        const instructions = jupiterTransactionInstructions(build, this.options.wallet);
         const lookupAddresses = Object.keys(build.addressesByLookupTableAddress ?? {});
         if (lookupAddresses.length > 10) throw new Error("Jupiter mengembalikan terlalu banyak lookup table");
         const lookupTables = await Promise.all(lookupAddresses.map(async (address) => {
@@ -856,12 +921,16 @@ export class CloseExecutor {
       }
       const signature = bs58.encode(transaction.signatures[0]);
       const txTime = Date.now();
-      this.options.db.prepare(`INSERT INTO transactions(signature,kind,position_id,pool,status,sent_at) VALUES(?,'SWAP',?,?,'PENDING',?)`)
-        .run(signature, position.id, position.pool, txTime);
-      saveSwap("PENDING", { out: build.outAmount, usd: estimatedUsd, impact: priceImpact, slippage, signature });
-      this.options.db.prepare(`INSERT INTO trade_events(trade_id,at,type,payload)
-        SELECT trade_id,?,'SWAP_PREPARED',? FROM trade_history WHERE position_id=?`)
-        .run(txTime, JSON.stringify({ signature, inputAmount: tokenAmount.toString(), quote: build.outAmount }), position.id);
+      this.options.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.options.db.prepare(`INSERT INTO transactions(signature,kind,position_id,pool,status,sent_at) VALUES(?,'SWAP',?,?,'PENDING',?)`)
+          .run(signature, position.id, position.pool, txTime);
+        saveSwap("PENDING", { out: build.outAmount, usd: estimatedUsd, impact: priceImpact, slippage, signature });
+        this.options.db.prepare(`INSERT INTO trade_events(trade_id,at,type,payload)
+          SELECT trade_id,?,'SWAP_PREPARED',? FROM trade_history WHERE position_id=?`)
+          .run(txTime, JSON.stringify({ signature, inputAmount: tokenAmount.toString(), quote: build.outAmount }), position.id);
+        this.options.db.exec("COMMIT");
+      } catch (error) { this.options.db.exec("ROLLBACK"); throw error; }
       try {
         await this.options.connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false, maxRetries: 0 });
         this.options.db.prepare(`INSERT INTO trade_events(trade_id,at,type,payload)
@@ -891,24 +960,14 @@ export class CloseExecutor {
           throw new UnknownBroadcast(`Swap ${signature} sudah dikirim tetapi status belum diketahui; retry otomatis dihentikan`);
         }
       }
-      const deltas = await this.transactionDeltas(signature, SOL_MINT);
       this.options.db.prepare("UPDATE transactions SET status='CONFIRMED',confirmed_at=? WHERE signature=?").run(Date.now(), signature);
-      this.options.db.prepare("UPDATE swaps SET status='CONFIRMED',sol_received_lamports=?,updated_at=? WHERE signature=?")
-        .run(deltas.solDelta > 0n ? deltas.solDelta.toString() : null, Date.now(), signature);
-      const actualSol = deltas.solDelta > 0n ? Number(deltas.solDelta) / 1e9 : null;
-      const realizedSlippage = actualSol === null || Number(build.outAmount) <= 0
-        ? null : (Number(build.outAmount) - Number(deltas.solDelta)) / Number(build.outAmount) * 10_000;
-      this.options.db.prepare("UPDATE trade_history SET swap_status='CONFIRMED',swap_signature=?,swap_input_mint=?,swap_sol_received=?,swap_slippage=?,swap_price_impact=?,total_sol_returned=COALESCE(sol_received,0)+COALESCE(?,0),finalized_at=? WHERE position_id=?")
-        .run(signature, position.tokenMint, actualSol, realizedSlippage, priceImpact, actualSol, Date.now(), position.id);
-      this.options.db.prepare("UPDATE trade_history SET network_fees_sol=COALESCE(network_fees_sol,0)+? WHERE position_id=?")
-        .run(Number(deltas.feeLamports) / 1e9, position.id);
-      this.options.db.prepare(`INSERT INTO trade_events(trade_id,at,type,payload)
-        SELECT trade_id,?,'SWAP_CONFIRMED',? FROM trade_history WHERE position_id=?`)
-        .run(Date.now(), JSON.stringify({ signature, receivedLamports: deltas.solDelta.toString() }), position.id);
-      this.updatePnl(position.id);
+      this.options.db.prepare("UPDATE swaps SET status='CONFIRMED',updated_at=? WHERE signature=?").run(Date.now(), signature);
+      const deltas = await this.transactionDeltas(signature, SOL_MINT);
+      this.recordSwap(signature, position.id, deltas);
+      const actualSol = Number(deltas.solDelta) / 1e9;
       await this.options.notify(notificationCard("✅ SWAP TERKONFIRMASI", [
         `Posisi ${position.id}`,
-        actualSol === null ? "SOL aktual belum dapat dibaca." : `Diterima ${actualSol.toFixed(6)} SOL`,
+        `Diterima ${actualSol.toFixed(6)} SOL`,
         `Perkiraan quote ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · dampak harga ${priceImpact.toFixed(2)}%`,
         `🔗 https://solscan.io/tx/${signature}`,
       ]));
@@ -924,12 +983,22 @@ export class CloseExecutor {
     ]));
   }
 
-  private async finishSwap(position: Position, amount: bigint, dryRun: boolean, closeSignature?: string): Promise<void> {
+  private async finishSwap(position: Position, amount: bigint, dryRun: boolean, closeSignature?: string, retry = false): Promise<void> {
     if (this.swapsInFlight.has(position.id)) return;
     this.swapsInFlight.add(position.id);
-    try { await this.processSwap(position, amount, dryRun, closeSignature); }
+    let started = false;
+    try {
+      if (!dryRun || retry) {
+        if (!closeSignature) throw new Error("Swap memerlukan signature close terkonfirmasi.");
+        amount = await this.remainingSwapAmount(position, closeSignature);
+      }
+      started = true;
+      await this.processSwap(position, amount, dryRun, closeSignature);
+    }
     catch (error) {
       const reason = safeError(error);
+      if (error instanceof MetadataPending) { await this.deferMetadata(position.id, reason); return; }
+      if (retry && !started) throw error;
       const status = error instanceof UnknownBroadcast ? "UNKNOWN" : "FAILED";
       this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
         .run(status, Date.now(), position.id);

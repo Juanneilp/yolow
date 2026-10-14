@@ -9,6 +9,14 @@ const METEORA_MAX_RANGE_SEC = 8 * 60 * 60;
 let geckoQueue: Promise<void> = Promise.resolve();
 let geckoNextRequestAt = 0;
 
+export function assertFreshCandle(time: number, timeframe: Timeframe, config: AppConfig["candles"], now = Date.now()): void {
+  const end = time + durationMs[timeframe];
+  // A finalized candle remains current until the next interval plus provider grace and stale allowance.
+  const maxAge = durationMs[timeframe] + (config.grace_window_sec + config.stale_data_pause_sec) * 1000;
+  if (!Number.isSafeInteger(time) || !Number.isFinite(end) || end > now - config.grace_window_sec * 1000 ||
+      now - end > maxAge) throw new Error("Candle finalized kedaluwarsa atau tidak valid; exit indikator dijeda");
+}
+
 function number(value: unknown): number | undefined {
   if (typeof value !== "number" && typeof value !== "string") return undefined;
   const parsed = Number(value);
@@ -141,6 +149,7 @@ async function fetchProvider(provider: string, pool: string, timeframe: Timefram
   const finalBefore = now - config.candles.grace_window_sec * 1000;
   const finalized = result.filter((candle) => candle.time + interval <= finalBefore).slice(-config.candles.backfill_candles);
   if (finalized.length === 0) throw new Error("provider tidak mengembalikan candle finalized");
+  assertFreshCandle(finalized.at(-1)!.time, timeframe, config.candles, now);
   return finalized;
 }
 

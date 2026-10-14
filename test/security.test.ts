@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { openDatabase } from "../src/storage/db.ts";
 import { tradesCsv } from "../src/journal/export.ts";
-import { PublicKey } from "@solana/web3.js";
-import { jupiterTransactionInstructions } from "../src/execution/executor.ts";
 import { readJsonResponse, redactSecrets, safeError, telegramApiBase } from "../src/security.ts";
 
 test("errors remove API credentials, authorization headers, URLs, and control characters", () => {
@@ -28,20 +26,6 @@ test("API token URL rejects path injection and JSON responses are size limited",
   assert.throws(() => telegramApiBase("123456:token/attacker"), /format is invalid/);
   assert.deepEqual(await readJsonResponse(new Response('{"ok":true}')), { ok: true });
   await assert.rejects(readJsonResponse(new Response('{"ok":true}'), 4), /batas ukuran/);
-});
-
-test("Jupiter swap instructions are restricted to the router and agent wallet signer", () => {
-  const wallet = new PublicKey("11111111111111111111111111111111");
-  const swapInstruction = {
-    programId: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
-    accounts: [{ pubkey: wallet.toBase58(), isSigner: true, isWritable: true }],
-    data: "",
-  };
-  const build = { swapInstruction, setupInstructions: [], otherInstructions: [], tipInstruction: null } as any;
-  assert.equal(jupiterTransactionInstructions(build, wallet).length, 1);
-  assert.throws(() => jupiterTransactionInstructions({ ...build, swapInstruction: { ...swapInstruction, programId: wallet.toBase58() } }, wallet), /program swap yang tidak diizinkan/);
-  assert.throws(() => jupiterTransactionInstructions({ ...build, swapInstruction: { ...swapInstruction, accounts: [{ pubkey: "Vote111111111111111111111111111111111111111", isSigner: true, isWritable: true }] } }, wallet), /signer selain wallet/);
-  assert.throws(() => jupiterTransactionInstructions({ ...build, otherInstructions: [swapInstruction] }, wallet), /instruksi tambahan yang tidak diizinkan/);
 });
 
 test("trade CSV prefixes spreadsheet formulas and writes from the audit-safe formatter", () => {

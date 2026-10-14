@@ -52,6 +52,10 @@ Open **⚙️ Konfigurasi** or send `/config` to browse settings. Tap a section,
 
 While `dry_run` is enabled, Yolow simulates Meteora close transactions and requests Jupiter Swap V2 build quotes without signing or sending. To enable live transactions, configure the external keypair and use `/golive`, then press its confirmation button. Every live close and swap is simulated before broadcast; uncertain broadcast status is recorded and never retried automatically.
 
+Jupiter instructions are decoded against the pinned on-chain IDL and checked against the requested amount, mint, slippage, wallet ATAs, and wrapped SOL cleanup. Unsupported instruction layouts are rejected. Retry uses only remaining confirmed close proceeds and rejects successful or unsettled latest attempts. Confirmed transactions with unavailable balance metadata remain `WAITING_METADATA` until reconciliation reads their actual results.
+
+When a previously simulated position enters live execution, its simulated journal and candle context are archived in a `DRY_RUN_ARCHIVED` trade event before the active journal becomes live. Indicator exits require fresh finalized candles at provider selection, evaluation, and before broadcast; the age allowance includes the timeframe, provider grace, and configured stale allowance.
+
 ## Current provider coverage
 
 Meteora DLMM and GeckoTerminal candle retrieval are implemented. GMGN candle data and `onchain_ticks` are not integrated, so those configured entries are skipped and the fallback chain continues. If no supported provider returns finalized candles, indicator exits pause and OOR monitoring continues. Meteora candle price units still need to be compared with the chosen chart source before relying on live indicator exits; keep the default dry-run mode during that review.

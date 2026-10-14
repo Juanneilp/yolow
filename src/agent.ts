@@ -4,7 +4,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfig } from "./config/config.ts";
 import type { Candle, Timeframe, Trigger } from "./domain/types.ts";
-import { fetchCandleAt, fetchCandleSeries, loadCandles, saveCandles } from "./market-data/candles.ts";
+import { assertFreshCandle, fetchCandleAt, fetchCandleSeries, loadCandles, saveCandles } from "./market-data/candles.ts";
 import { indicatorExitSignal } from "./market-data/indicators.ts";
 import { readJsonResponse, safeError, telegramApiBase } from "./security.ts";
 import { ActiveBinMonitor } from "./market-data/active-bin.ts";
@@ -259,6 +259,7 @@ export class YolowAgent {
     const candles = loadCandles(this.options.db, pool, timeframe, unit, fetched.at(-1)?.provider ?? "", this.options.config.candles.backfill_candles);
     if (candles.length < 35) return;
     const candle = candles.at(-1)!;
+    assertFreshCandle(candle.time, timeframe, this.options.config.candles);
     const key = `${pool}:${timeframe}:${unit}:${candle.provider}`;
     const signal = indicatorExitSignal(candles, this.options.config.indicator_exit);
     const inserted = this.options.db.prepare(`INSERT OR IGNORE INTO signals
