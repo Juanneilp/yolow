@@ -34,6 +34,7 @@ export function isAuthorizedUpdate(update: any, chatId: string, userId = chatId)
 
 export const mainMenuMarkup = { inline_keyboard: [
   [{ text: "📊 Status", callback_data: "cmd:/status" }, { text: "📍 Posisi", callback_data: "cmd:/positions" }],
+  [{ text: "💰 PnL wallet", callback_data: "cmd:/pnl" }, { text: "🔄 Refresh PnL", callback_data: "cmd:/pnl" }],
   [{ text: "📒 Riwayat", callback_data: "cmd:/history" }, { text: "📈 Statistik", callback_data: "cmd:/stats" }],
   [{ text: "⏱ Timeframe", callback_data: "cmd:/tf" }, { text: "📤 Export CSV", callback_data: "cmd:/export" }],
   [{ text: "🔥 Top Trending", callback_data: "top_trending" }, { text: "⚙️ Konfigurasi", callback_data: "cmd:/config" }],
@@ -178,7 +179,7 @@ export async function runBot(options: BotOptions): Promise<void> {
             if (update.callback_query.data === "top_trending") await showTopTrending(update);
             else if (update.callback_query.data === "menu") await showMenu(update);
             else if (update.callback_query.data === "help") {
-              await editOrSend(update, "🧰 DAFTAR COMMAND\n/status · /positions · /history [1–50] · /stats [7d|30d|all]\n/tf [5m|15m|30m|1h] · /export · /toptrending · /config\n/config set <path> <nilai>\n/ignore <position_id> · /unignore <position_id>\n/trade <id|position_id> · /note <id|position_id> <catatan>\n/tag <id|position_id> <tag> · /retryswap <position_id>\n/golive · /menu · /start", mainMenuMarkup);
+              await editOrSend(update, "🧰 DAFTAR COMMAND\n/status · /positions · /pnl · /history [1–50] · /stats [7d|30d|all]\n/tf [5m|15m|30m|1h] · /export · /toptrending · /config\n/config set <path> <nilai>\n/ignore <position_id> · /unignore <position_id>\n/trade <id|position_id> · /note <id|position_id> <catatan>\n/tag <id|position_id> <tag> · /retryswap <position_id>\n/golive · /menu · /start", mainMenuMarkup);
             } else if (options.onCallback) {
               const reply = await options.onCallback(String(update.callback_query.data ?? ""));
               if (reply) await editOrSend(update, reply.text, withMenuNavigation(reply.replyMarkup), reply.parseMode);

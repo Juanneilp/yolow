@@ -71,9 +71,7 @@ export class ActiveBinMonitor {
         try {
           state.subscription = this.options.connection.onAccountChange(poolKey, (account) => {
             try {
-              const decoded = client.program.coder.accounts.decode("lbPair", account.data) as { activeId: unknown };
-              const activeBin = Number(decoded.activeId);
-              if (!Number.isSafeInteger(activeBin)) throw new Error("activeId is not a safe integer");
+              const activeBin = decodeActiveBin(client, account.data);
               state.activeBin = activeBin;
               state.lastUpdate = Date.now();
             } catch (error) {
@@ -116,7 +114,9 @@ export class ActiveBinMonitor {
           const pollStartedAt = Date.now();
           state.lastPollAt = pollStartedAt;
           try {
-            const activeBin = (await state.client.getActiveBin()).binId;
+            const account = await this.options.connection.getAccountInfo(new PublicKey(address), "confirmed");
+            if (!account) throw new Error("Pool account unavailable");
+            const activeBin = decodeActiveBin(state.client, account.data);
             if (state.lastUpdate < pollStartedAt) {
               state.activeBin = activeBin;
               state.lastUpdate = Date.now();
@@ -157,4 +157,11 @@ export class ActiveBinMonitor {
 
 export function distance(position: Position, activeBin: number): { below: number; above: number } {
   return { below: position.lowerBinId - activeBin, above: activeBin - position.upperBinId };
+}
+
+function decodeActiveBin(client: DLMM, data: Buffer): number {
+  const decoded = client.program.coder.accounts.decode("lbPair", data) as { activeId: unknown };
+  const activeBin = Number(decoded.activeId);
+  if (!Number.isSafeInteger(activeBin)) throw new Error("activeId is not a safe integer");
+  return activeBin;
 }

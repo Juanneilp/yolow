@@ -9,6 +9,7 @@ import { indicatorExitSignal } from "./market-data/indicators.ts";
 import { readJsonResponse, safeError, telegramApiBase } from "./security.ts";
 import { ActiveBinMonitor } from "./market-data/active-bin.ts";
 import { listPositions } from "./positions/monitor.ts";
+import { PositionPnlMonitor } from "./positions/pnl.ts";
 import { CloseExecutor } from "./execution/executor.ts";
 import { getMeta, setMeta } from "./storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -30,6 +31,7 @@ type Options = {
 
 export class YolowAgent {
   readonly executor: CloseExecutor;
+  readonly pnl: PositionPnlMonitor;
   private readonly activeBins: ActiveBinMonitor;
   private discoveryBusy = false;
   private candleBusy = false;
@@ -39,6 +41,7 @@ export class YolowAgent {
   private readonly lastCandleSuccessByPool = new Map<string, number>();
 
   constructor(private readonly options: Options) {
+    this.pnl = new PositionPnlMonitor(options.wallet.toBase58(), options.config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag");
     this.executor = new CloseExecutor({
       connection: options.connection, db: options.db, config: options.config,
       wallet: options.wallet, jupiterApiKey: options.jupiterApiKey,
@@ -59,6 +62,8 @@ export class YolowAgent {
     await this.runBackgroundTask("position discovery", () => this.discover());
     if (this.stopped) return;
     await this.runBackgroundTask("active-bin startup", () => this.activeBins.start());
+    if (this.stopped) return;
+    await this.runBackgroundTask("position PnL", () => this.refreshPnl());
     if (this.stopped) return;
     await this.runBackgroundTask("candle refresh", () => this.refreshCandles());
     if (this.stopped) return;
@@ -84,6 +89,7 @@ export class YolowAgent {
     }
     if (this.stopped) return;
     this.timers.push(setInterval(() => void this.runBackgroundTask("position discovery", () => this.discover()), this.options.config.mode.position_poll_interval_sec * 1000));
+    this.timers.push(setInterval(() => void this.runBackgroundTask("position PnL", () => this.refreshPnl()), 60_000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("candle refresh", () => this.refreshCandles()), this.options.config.candles.poll_interval_sec * 1000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("position snapshots", () => this.takeSnapshots()), this.options.config.history.snapshot_interval_sec * 1000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("data retention", () => this.cleanRetainedData()), 60 * 60 * 1000));
@@ -120,6 +126,10 @@ export class YolowAgent {
   async setTimeframe(timeframe: Timeframe): Promise<void> {
     setMeta(this.options.db, "active_timeframe", timeframe);
     await this.refreshCandles();
+  }
+
+  private async refreshPnl(): Promise<void> {
+    await this.pnl.refresh(listPositions(this.options.db).map((position) => position.pool));
   }
 
   private timeframeForPool(pool: string): Timeframe {

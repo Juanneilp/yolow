@@ -190,6 +190,38 @@ export function createCommandHandler(options: Options) {
 
   const onCommand = async (command: string, args: string[]): Promise<Reply | undefined> => {
     switch (command.toLowerCase()) {
+      case "/pnl": {
+        const positions = listPositions(db);
+        const replyMarkup = { inline_keyboard: [[{ text: "🔄 Refresh PnL", callback_data: "cmd:/pnl" }]] };
+        if (!positions.length) return { text: "💰 PnL WALLET · SOL\nBelum ada posisi terbuka yang terdeteksi.", replyMarkup };
+        const [results, tokens] = await Promise.all([
+          agent.pnl.refresh(positions.map((position) => position.pool), true),
+          fetchTokenInfo(positions.map((position) => position.tokenMint), jupiterApiKey, config.jupiter.tokens_base_url),
+        ]);
+        const value = (amount: number | null | undefined) => amount == null ? "belum tersedia" : `${amount.toFixed(8)} SOL`;
+        const blocks = positions.map((position) => {
+          const result = results.get(position.pool);
+          const data = result?.positions.get(position.id);
+          const quote = position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint);
+          const stale = result?.fetchedAt != null && Date.now() - result.fetchedAt > 120_000;
+          return [
+            `${tokenLabel(position.tokenMint, tokens.get(position.tokenMint))}/${quote}`,
+            `Posisi ${position.id}`,
+            `Deposit ${value(data?.deposits)}`,
+            `Penarikan ${value(data?.withdrawals)}`,
+            `Fee/reward diklaim ${value(data?.claimed)}`,
+            `PnL ${value(data?.pnl)}${data?.percent == null ? "" : ` (${data.percent.toFixed(4)}%)`}`,
+            `Diambil ${result?.fetchedAt == null ? "belum tersedia" : wib(result.fetchedAt)}`,
+            `Saldo diperbarui penyedia ${data?.updatedAt == null ? "belum tersedia" : wib(data.updatedAt)}`,
+            ...(result?.error ? [`⚠️ Pembaruan gagal; data terakhir ditampilkan. ${result.error}`] : stale ? ["⚠️ Hasil terakhir lebih dari 2 menit lalu."] : []),
+            ...(!data ? ["PnL posisi belum tersedia di indeks Meteora."] : []),
+          ].join("\n");
+        });
+        return {
+          text: `💰 ESTIMASI PnL WALLET · METEORA\nSejak posisi dibuka · SOL\n\n${blocks.join("\n\n──────────────\n\n")}\n\nDiperiksa tiap 60 detik. Indeks Meteora dapat terlambat.\nTermasuk fee/reward menurut Meteora; belum dikurangi gas dan slippage likuidasi.`,
+          replyMarkup,
+        };
+      }
       case "/status": {
         const [balance, positions] = await Promise.all([connection.getBalance(wallet, "confirmed"), Promise.resolve(listPositions(db))]);
         const ignored = positions.filter((position) => position.ignored).length;
@@ -258,7 +290,7 @@ export function createCommandHandler(options: Options) {
           };
         });
         return { text: `📍 <b>POSISI TERBUKA</b> · ${positions.length}\nGunakan tombol untuk mengatur sinyal exit.\n\n${blocks.map((item) => item.block).join("\n\n──────────────\n\n")}`,
-          replyMarkup: { inline_keyboard: blocks.map((item) => [item.button]) },
+          replyMarkup: { inline_keyboard: [...blocks.map((item) => [item.button]), [{ text: "💰 PnL wallet", callback_data: "cmd:/pnl" }]] },
           parseMode: "HTML" };
       }
       case "/tf": {
@@ -446,7 +478,7 @@ export function createCommandHandler(options: Options) {
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);
-      if (!["/status", "/positions", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
+      if (!["/status", "/positions", "/pnl", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
       return onCommand(command, args);
     }
     return undefined;

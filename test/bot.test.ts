@@ -17,7 +17,7 @@ test("inline home menu groups features into a two-column grid", () => {
   const rows = mainMenuMarkup.inline_keyboard;
   assert.ok(rows.every((row) => row.length === 2));
   const commands = new Set(rows.flat().map((button) => button.callback_data));
-  for (const command of ["/status", "/positions", "/history", "/stats", "/tf", "/export", "/config", "/ignore", "/unignore", "/trade", "/retryswap", "/note", "/tag", "/golive"]) {
+  for (const command of ["/status", "/positions", "/pnl", "/history", "/stats", "/tf", "/export", "/config", "/ignore", "/unignore", "/trade", "/retryswap", "/note", "/tag", "/golive"]) {
     assert.ok(commands.has(`cmd:${command}`), `menu is missing ${command}`);
   }
   assert.ok(commands.has("top_trending"));

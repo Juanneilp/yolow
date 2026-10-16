@@ -6,13 +6,13 @@
   "mode": {
    "dry_run": true,
    "shadow_candles": true,
-   "position_poll_interval_sec": 60
+   "position_poll_interval_sec": 300
   },
 
   "rpc": {
     "http_base": "https://mainnet.helius-rpc.com",
     "ws_base": "wss://mainnet.helius-rpc.com",
-    "oor_fallback_poll_interval_sec": 5
+    "oor_fallback_poll_interval_sec": 15
   },
 
   "candles": {
@@ -121,7 +121,7 @@
   "history": {
     "enabled": true,
     "record_dry_run_trades": true,
-    "snapshot_interval_sec": 60,
+    "snapshot_interval_sec": 300,
     "snapshot_retention_days": 180,
     "candle_audit_retention_days": 60,
     "context_candles": 50,
