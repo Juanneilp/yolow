@@ -17,12 +17,37 @@ type BotOptions = {
   onText?: (text: string) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
 };
 
-export function actionForMessage(text: string): "menu" | "start" | "top_trending" | undefined {
+export const botCommands = [
+  { command: "start", description: "Mulai bot dan tampilkan akses cepat" },
+  { command: "menu", description: "Buka menu utama Yolow" },
+  { command: "help", description: "Lihat semua command dan cara penggunaannya" },
+  { command: "status", description: "Lihat status bot, wallet, dan mode eksekusi" },
+  { command: "positions", description: "Lihat posisi DLMM yang dipantau" },
+  { command: "pnl", description: "Lihat estimasi PnL wallet per posisi dalam SOL" },
+  { command: "history", description: "Riwayat trade: /history [1–50]" },
+  { command: "stats", description: "Statistik trade: /stats [7d|30d|all]" },
+  { command: "tf", description: "Timeframe indikator: /tf [5m|15m|30m|1h]" },
+  { command: "export", description: "Unduh jurnal trade sebagai CSV" },
+  { command: "toptrending", description: "Lihat token dan pool Top Trending" },
+  { command: "config", description: "Buka konfigurasi; ubah dengan /config set <path> <nilai>" },
+  { command: "ignore", description: "Abaikan sinyal exit: /ignore <position_id>" },
+  { command: "unignore", description: "Aktifkan sinyal exit: /unignore <position_id>" },
+  { command: "trade", description: "Detail trade: /trade <trade_id|position_id>" },
+  { command: "note", description: "Catatan trade: /note <trade_id|position_id> <catatan>" },
+  { command: "tag", description: "Tag trade: /tag <trade_id|position_id> <tag>" },
+  { command: "retryswap", description: "Coba ulang swap: /retryswap <position_id>" },
+  { command: "golive", description: "Minta aktivasi LIVE; perlu konfirmasi sebelum aktif" },
+];
+
+const commandHelp = ["🧰 DAFTAR COMMAND", ...botCommands.map(({ command, description }) => `/${command} — ${description}`)].join("\n");
+
+export function actionForMessage(text: string): "menu" | "start" | "help" | "top_trending" | undefined {
   const messageText = text.trim();
   const command = messageText.split(/\s+/)[0]?.split("@")[0]?.toLowerCase();
   const label = messageText.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
   if (label === "menu" || command === "/menu") return "menu";
   if (command === "/start") return "start";
+  if (command === "/help") return "help";
   if (command === "/toptrending" || label === "top trending") return "top_trending";
 }
 
@@ -79,9 +104,8 @@ export async function runBot(options: BotOptions): Promise<void> {
     } catch {
       throw new Error(`Telegram ${method} request failed or timed out`);
     }
-    if (!response.ok) throw new Error(`Telegram ${method} returned HTTP ${response.status}`);
     const result = await readJsonResponse<{ ok?: boolean; result?: any; description?: string }>(response, 1_000_000);
-    if (!result.ok) throw new Error(`Telegram ${method} failed: ${result.description || "unknown error"}`);
+    if (!response.ok || !result.ok) throw new Error(`Telegram ${method} failed HTTP ${response.status}: ${result.description || "unknown error"}`);
     return result.result;
   }
 
@@ -158,6 +182,18 @@ export async function runBot(options: BotOptions): Promise<void> {
     else await send(text, mainMenuMarkup, status?.parseMode);
   }
 
+  const menuSetup: Array<[string, Record<string, unknown>]> = [
+    ["setMyCommands", { commands: botCommands, scope: { type: "chat", chat_id: options.chatId }, language_code: "" }],
+  ];
+  if (!options.chatId.startsWith("-")) {
+    menuSetup.push(["setChatMenuButton", { chat_id: options.chatId, menu_button: { type: "commands" } }]);
+  }
+  for (const [method, body] of menuSetup) {
+    if (options.signal?.aborted) return;
+    try { await telegram(method, body); }
+    catch (error) { console.warn("Telegram command menu setup failed:", safeError(error)); }
+  }
+
   console.log("Yolow Telegram bot is polling.");
 
   while (!options.signal?.aborted) {
@@ -179,7 +215,7 @@ export async function runBot(options: BotOptions): Promise<void> {
             if (update.callback_query.data === "top_trending") await showTopTrending(update);
             else if (update.callback_query.data === "menu") await showMenu(update);
             else if (update.callback_query.data === "help") {
-              await editOrSend(update, "🧰 DAFTAR COMMAND\n/status · /positions · /pnl · /history [1–50] · /stats [7d|30d|all]\n/tf [5m|15m|30m|1h] · /export · /toptrending · /config\n/config set <path> <nilai>\n/ignore <position_id> · /unignore <position_id>\n/trade <id|position_id> · /note <id|position_id> <catatan>\n/tag <id|position_id> <tag> · /retryswap <position_id>\n/golive · /menu · /start", mainMenuMarkup);
+              await editOrSend(update, commandHelp, mainMenuMarkup);
             } else if (options.onCallback) {
               const reply = await options.onCallback(String(update.callback_query.data ?? ""));
               if (reply) await editOrSend(update, reply.text, withMenuNavigation(reply.replyMarkup), reply.parseMode);
@@ -199,6 +235,8 @@ export async function runBot(options: BotOptions): Promise<void> {
           const action = actionForMessage(messageText);
           if (action === "menu") {
             await showMenu();
+          } else if (action === "help") {
+            await send(commandHelp, mainMenuMarkup);
           } else if (action === "start") {
             const status = await options.onCommand?.("/status", []);
             await send(status?.text ?? "⚡ YOLOW · METEORA DLMM\nPilih fitur melalui Menu.", quickAccessMarkup, status?.parseMode);
