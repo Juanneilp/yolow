@@ -50,9 +50,31 @@ In Telegram, send `/start` and tap **Menu**. `/status` and `/positions` show the
 
 On startup, Yolow registers all commands with Indonesian descriptions for the configured chat and enables Telegram's native command menu in private chats. On your phone or laptop, open the menu next to the message field or type `/` to browse commands. The icon's appearance depends on the Telegram app. `/help` and **🧰 Bantuan command** show the same command list with usage hints. If registration fails, the bot logs a warning and continues; restart to retry registration. Group chats use slash-command suggestions and `/help` without a private-chat menu button. Menu setup uses Telegram only and adds no Helius requests.
 
-Open **💰 PnL wallet** or send `/pnl` to see each open position's estimated lifetime PnL in SOL from Meteora's indexed position API, including claimed and unclaimed fees/rewards as calculated by Meteora. This is wallet performance, independent of the bot's DRY-RUN/LIVE execution journal. Gas and liquidation slippage are not deducted. Missing SOL data is shown as unavailable, never zero. The view shows fetch time and the provider's last balance-update time; an unchanged balance timestamp does not itself mean the request failed.
+Open **📍 Posisi & PnL** or send `/positions` to see open positions sorted by highest estimated lifetime PnL in SOL. `/pnl` remains a compatibility alias. The list shows five positions per page, each position's signed PnL and percentage, range status, exit status, and fetch time. The summary totals available PnL with an explicit coverage count (for example, 3/4 positions); missing values are shown as unavailable. Ignored positions remain included in PnL.
 
-PnL refreshes in memory every 60 seconds and uses no Helius RPC calls. **Refresh PnL** fetches again with a 10-second minimum interval per pool; concurrent requests share one fetch. Failed refreshes retain the previous result with a warning and wait at least 60 seconds (or longer when `Retry-After` requires it). No RPC fallback is used. The cache resets when the process restarts.
+Tap a numbered **Detail** button for deposit, withdrawal, claimed fees/rewards, range and active bin, latest exit signal, copyable position/pool addresses, and provider timestamps. **Abaikan exit** and **Aktifkan exit** update the selected position and keep its detail open. **Kembali ke daftar** opens the first page with the latest ranking.
+
+Out-of-range positions show **OOR atas/bawah**, percentage price distance from the crossed range boundary, and bin distance in both list and detail. Percentages compound the pool's bin step and use the last stored active bin; direction follows DLMM bin order. Missing bin step leaves the percentage unavailable.
+
+PnL comes from Meteora's indexed position API, including claimed and unclaimed fees/rewards as calculated by Meteora. It is independent of the bot's DRY-RUN/LIVE execution journal; gas and liquidation slippage are not deducted. The view shows fetch time and the provider's last balance-update time; an unchanged balance timestamp does not itself mean the request failed.
+
+PnL refreshes in memory every 60 seconds and uses no Helius RPC calls. Opening the combined menu or pressing **Refresh** requests fresh data with a 10-second minimum interval per pool; pagination and opening details use the normal cache. Refresh and navigation edit the same Telegram message. Concurrent requests share one fetch. Failed refreshes retain the previous result with a warning and wait at least 60 seconds (or longer when `Retry-After` requires it). No RPC fallback is used. The cache resets when the process restarts.
+
+### Profit reminders
+
+By default, Yolow sends a combined Telegram reminder every **5 minutes** while any open position has positive SOL PnL and a PnL percentage **strictly above 5%**. Exactly 5% does not qualify. Reminders include ignored positions and work in both DRY-RUN and LIVE without closing or swapping anything. Each summary lists the qualifying positions, sorted by highest percentage, with estimated SOL profit and percentage. Long summaries are split into numbered messages.
+
+Change these settings through **Config → Notifikasi & riwayat**, or use:
+
+```text
+/config set notify.profit_alert.interval_minutes 10
+/config set notify.profit_alert.threshold_percent 7.5
+/config set notify.profit_alert.enabled false
+```
+
+Settings are saved and applied without restart. Interval must be a whole number of at least one minute; threshold must be nonnegative. Older config files default to `{ "enabled": true, "interval_minutes": 5, "threshold_percent": 5 }` when the block is absent.
+
+The existing 60-second PnL background cycle checks whether the configured interval has elapsed since the last reminder check. The first check is one interval after the initial PnL refresh; restarting resets this schedule. Checks send nothing when no positions qualify, data is missing, the latest request failed, or the fetch is over two minutes old. Manual refresh does not send reminders. Telegram failures are logged and attempted again at the next interval, without catch-up messages or a persistent delivery queue. Delivery depends on the process running and provider availability.
 
 Free-tier defaults scan for positions and take on-chain history snapshots every 300 seconds, reducing those scheduled operations by 80% compared with the previous 60-second intervals. New positions may take up to five minutes to appear. Existing pools still use WebSocket updates; fallback OOR reads one pool account every 15 seconds when needed. During feed problems, OOR detection can therefore be delayed about 15 seconds. These savings do not guarantee a monthly credit ceiling: total usage depends on pool count, reconnects, and transactions. Restart the process after changing these intervals.
 

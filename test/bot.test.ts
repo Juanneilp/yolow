@@ -19,9 +19,11 @@ test("inline home menu groups features into a two-column grid", () => {
   const rows = mainMenuMarkup.inline_keyboard;
   assert.ok(rows.every((row) => row.length === 2));
   const commands = new Set(rows.flat().map((button) => button.callback_data));
-  for (const command of ["/status", "/positions", "/pnl", "/history", "/stats", "/tf", "/export", "/config", "/ignore", "/unignore", "/trade", "/retryswap", "/note", "/tag", "/golive"]) {
+  for (const command of ["/status", "/positions", "/history", "/stats", "/tf", "/export", "/config", "/ignore", "/unignore", "/trade", "/retryswap", "/note", "/tag", "/golive"]) {
     assert.ok(commands.has(`cmd:${command}`), `menu is missing ${command}`);
   }
+  assert.equal(commands.has("cmd:/pnl"), false);
+  assert.equal(rows[0][1].text, "📍 Posisi & PnL");
   assert.ok(commands.has("top_trending"));
   assert.ok(commands.has("help"));
 });
@@ -35,7 +37,7 @@ test("commands and callbacks require both the configured chat and allowed sender
 });
 
 test("native command list includes all supported commands with valid names and descriptions", () => {
-  const expected = ["start", "menu", "help", "status", "positions", "pnl", "history", "stats", "tf", "export", "toptrending", "config", "ignore", "unignore", "trade", "note", "tag", "retryswap", "golive"];
+  const expected = ["start", "menu", "help", "status", "positions", "history", "stats", "tf", "export", "toptrending", "config", "ignore", "unignore", "trade", "note", "tag", "retryswap", "golive"];
   assert.deepEqual(botCommands.map(({ command }) => command), expected);
   assert.equal(new Set(botCommands.map(({ command }) => command)).size, expected.length);
   for (const { command, description } of botCommands) {
@@ -126,7 +128,7 @@ test("repeated PnL refresh edits the same bubble and ignores Telegram's unchange
       if (++polls > 1) { shutdown.abort(); return Response.json({ ok: true, result: [] }); }
       return Response.json({ ok: true, result: [1, 2, 3].map((n) => ({
         update_id: n, callback_query: {
-          id: `refresh-${n}`, from: { id: 42 }, data: "cmd:/pnl",
+          id: `refresh-${n}`, from: { id: 42 }, data: "positions:refresh:0",
           message: { chat: { id: 42 }, message_id: 123 },
         },
       })) });
@@ -140,7 +142,7 @@ test("repeated PnL refresh edits the same bubble and ignores Telegram's unchange
     token: "123:test", chatId: "42", config: {} as any, jupiterApiKey: "",
     meteoraBaseUrl: "https://dlmm.datapi.meteora.ag", jupiterTokensBaseUrl: "https://api.jup.ag/tokens/v2",
     signal: shutdown.signal, onCallback: async () => ({
-      text: "PnL 0.00063144 SOL", replyMarkup: { inline_keyboard: [[{ text: "🔄 Refresh PnL", callback_data: "cmd:/pnl" }]] },
+      text: "Posisi & PnL +0.00063144 SOL", replyMarkup: { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: "positions:refresh:0" }]] },
     }),
   });
   const editCalls = calls.filter(({ method }) => method === "editMessageText");

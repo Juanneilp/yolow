@@ -22,8 +22,7 @@ export const botCommands = [
   { command: "menu", description: "Buka menu utama Yolow" },
   { command: "help", description: "Lihat semua command dan cara penggunaannya" },
   { command: "status", description: "Lihat status bot, wallet, dan mode eksekusi" },
-  { command: "positions", description: "Lihat posisi DLMM yang dipantau" },
-  { command: "pnl", description: "Lihat estimasi PnL wallet per posisi dalam SOL" },
+  { command: "positions", description: "Lihat posisi dan estimasi PnL per posisi dalam SOL" },
   { command: "history", description: "Riwayat trade: /history [1–50]" },
   { command: "stats", description: "Statistik trade: /stats [7d|30d|all]" },
   { command: "tf", description: "Timeframe indikator: /tf [5m|15m|30m|1h]" },
@@ -58,8 +57,7 @@ export function isAuthorizedUpdate(update: any, chatId: string, userId = chatId)
 }
 
 export const mainMenuMarkup = { inline_keyboard: [
-  [{ text: "📊 Status", callback_data: "cmd:/status" }, { text: "📍 Posisi", callback_data: "cmd:/positions" }],
-  [{ text: "💰 PnL wallet", callback_data: "cmd:/pnl" }, { text: "🔄 Refresh PnL", callback_data: "cmd:/pnl" }],
+  [{ text: "📊 Status", callback_data: "cmd:/status" }, { text: "📍 Posisi & PnL", callback_data: "cmd:/positions" }],
   [{ text: "📒 Riwayat", callback_data: "cmd:/history" }, { text: "📈 Statistik", callback_data: "cmd:/stats" }],
   [{ text: "⏱ Timeframe", callback_data: "cmd:/tf" }, { text: "📤 Export CSV", callback_data: "cmd:/export" }],
   [{ text: "🔥 Top Trending", callback_data: "top_trending" }, { text: "⚙️ Konfigurasi", callback_data: "cmd:/config" }],

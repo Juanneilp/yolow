@@ -51,7 +51,7 @@ The inline menu uses Yolow features:
 
 | Row | Buttons |
 |---|---|
-| 1 | Status · Positions |
+| 1 | Status · Posisi & PnL |
 | 2 | History · Statistics |
 | 3 | Timeframe · Export |
 | 4 | Top Trending · Configuration |
@@ -77,11 +77,46 @@ Example result block:
 CA 6GmAFS123456789ABCDEFGHJKLMNPQRSTUVWXYZUNgx · Pool zxTpi4123456789ABCDEFGHJKLMNPQRSTUVWXYZSCLX
 ```
 
-### Position list and details
+### Positions and PnL
 
-Each position shows its symbol/pair, abbreviated public key, bin range, active bin, lower/upper OOR distance, trigger status, and `ACTIVE` or `IGNORED` status. Show one position per block so its actions cannot be confused with another.
+Use one **📍 Posisi & PnL** entry in the inline and native command menus. `/positions` is the main command; `/pnl` and older PnL buttons open the same view for compatibility.
 
-On a position detail, show a contextual button based on the stored state: `Ignore position` or `Unignore position`. These buttons invoke the same actions as `/ignore <position>` and `/unignore <position>`.
+Show five open positions per page, sorted by highest PnL in SOL. Equal values follow discovery order; unavailable PnL comes last. Each compact card shows its number, token pair, shortened position ID, signed PnL in SOL and percent, range status, exit status, and fetch time. Use bold PnL and text plus emoji to distinguish profit, loss, zero, and unavailable data. Very small nonzero values use a signed threshold (for example, `−<0.00000001 SOL`) instead of negative zero.
+
+The header totals available PnL and states coverage, such as `PnL terhitung 3/4`. Include ignored positions in PnL. Label cached results when a refresh fails or when the last fetch is older than two minutes. Never display unavailable PnL as zero.
+
+For positions outside their range, show `🔺 OOR atas 2,53% · jarak 10 bin` or `🔻 OOR bawah 2,47% · jarak 10 bin` in both list and detail. Measure price distance relative to the crossed boundary using compounded bin steps, not the move needed to return. Use two decimal places and `<0,01%` for smaller distances. If bin step is missing or invalid, show `persentase belum tersedia` and keep the direction and bin distance. Detail explains that the percentage uses the last stored active bin; direction follows DLMM bin order.
+
+Example list (Telegram renders the title and PnL in bold):
+
+```text
+📍 POSISI & PnL · 2 posisi
+PnL terhitung 2/2 · +0.01192000 SOL
+Exit aktif 1 · Diabaikan 1
+Halaman 1/1 · PnL SOL terbesar
+
+1. BONK/SOL · AiEkQ…tuyn1
+🟢 PnL +0.01234000 SOL (+2.4680%)
+🧭 Dalam range · ✅ Exit aktif
+🕒 Diambil: 19 Okt 2026, 14.05.00 WIB
+
+2. TOKEN/SOL · 9hEzf…XbeFd
+🔴 PnL −0.00042000 SOL (−0.0840%)
+🧭 🔻 OOR bawah 2,47% · jarak 10 bin · ⏸ Exit diabaikan
+🕒 Diambil: 19 Okt 2026, 14.05.00 WIB
+```
+
+Numbered **Detail** buttons identify each position, including positions with the same pair. Put page navigation and **Refresh** below them. Keep every message under the internal 3,500-character limit so refresh can edit the same bubble.
+
+Detail puts PnL and exit state first, followed by deposits, withdrawals, claimed fees/rewards, token name, bin step and fee, range, active bin, range distances, last exit signal, discovery time, and full copyable position/pool addresses. Show fetch and provider balance-update timestamps separately. Include **Refresh**, **Abaikan exit** or **Aktifkan exit**, and **Kembali ke daftar**. Updating exit state keeps the detail open; returning opens page one.
+
+Explain that PnL is a Meteora lifetime estimate including fees/rewards, with gas and liquidation slippage excluded. Escape all dynamic HTML, including names and provider errors.
+
+### Profit reminders
+
+Expose `notify.profit_alert.enabled`, `interval_minutes`, and `threshold_percent` in **Notifikasi & riwayat**. Defaults are enabled, five minutes, and strictly above 5%; changes apply without restart. Send one combined plain-text summary per interval when eligible open positions exist, including positions with ignored exits. Order by highest profit percentage and show token pair, shortened position ID, signed SOL PnL, and percentage. Use existing token labels with a shortened mint fallback.
+
+Title the message **💰 POSISI PROFIT DI ATAS AMBANG**. Include qualifying count, configured threshold and interval, check time, the Meteora estimate caveat, and `/positions` for detail. Keep messages under 3,500 characters; split long summaries into numbered parts without dropping positions. Do not send reminders from manual refresh, failed fetches, missing values, or fetch results older than two minutes.
 
 ### Event notifications
 

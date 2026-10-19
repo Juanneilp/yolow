@@ -4,6 +4,7 @@ import { timeframes, type AppConfig } from "../config/config.ts";
 import { applyConfigInPlace, editablePaths, prepareConfigUpdate, writeConfigAtomically } from "../config/config-store.ts";
 import { loadSigner, setLiveMode } from "../execution/executor.ts";
 import { listPositions, setPositionIgnored } from "../positions/monitor.ts";
+import type { PositionPnl } from "../positions/pnl.ts";
 import { getMeta, setMeta } from "../storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { YolowAgent } from "../agent.ts";
@@ -62,6 +63,7 @@ const configSections: Record<string, { title: string; paths: string[] }> = {
     "candles.grace_window_sec", "candles.backfill_candles", "candles.stale_data_pause_sec",
   ] },
   records: { title: "NOTIFIKASI & RIWAYAT", paths: [
+    "notify.profit_alert.enabled", "notify.profit_alert.interval_minutes", "notify.profit_alert.threshold_percent",
     "notify.low_sol_balance_alert_sol", "notify.heartbeat.enabled", "notify.heartbeat.at_time",
     "history.snapshot_interval_sec", "history.snapshot_retention_days", "history.context_candles",
     "history.csv_export.enabled", "history.backup.enabled", "history.backup.at_time", "history.backup.keep",
@@ -188,40 +190,120 @@ export function createCommandHandler(options: Options) {
     };
   };
 
+  const signed = (amount: number, precision: number): string => {
+    const value = Math.abs(amount).toFixed(precision);
+    const magnitude = amount !== 0 && Number(value) === 0 ? `<${(10 ** -precision).toFixed(precision)}` : value;
+    return `${amount > 0 ? "+" : amount < 0 ? "−" : ""}${magnitude}`;
+  };
+  const pnlLine = (data?: PositionPnl): string => {
+    if (data?.pnl == null) return "⚪ PnL <b>Belum tersedia</b>";
+    const percent = data.percent == null ? "" : ` (${signed(data.percent, 4)}%)`;
+    const icon = data.pnl > 0 ? "🟢" : data.pnl < 0 ? "🔴" : "⚪";
+    return `${icon} PnL <b>${escapeHtml(signed(data.pnl, 8) + " SOL" + percent)}</b>`;
+  };
+
+  const positionsReply = async (requestedPage = 0, force = false, positionId?: string): Promise<Reply> => {
+    const positions = listPositions(db);
+    const back = { text: "⬅️ Kembali ke daftar", callback_data: "positions:page:0" };
+    if (positionId && !positions.some((position) => position.id === positionId)) {
+      return { text: "Posisi tidak lagi terbuka.", replyMarkup: { inline_keyboard: [[back]] } };
+    }
+    if (!positions.length) return {
+      text: "📍 <b>POSISI &amp; PnL</b>\nBelum ada posisi terbuka yang terdeteksi.", parseMode: "HTML",
+      replyMarkup: { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: "positions:refresh:0" }]] },
+    };
+    // Keep every open pool in the refresh set: the monitor prunes caches for omitted pools.
+    const [results, tokens] = await Promise.all([
+      agent.pnl.refresh(positions.map((position) => position.pool), force),
+      fetchTokenInfo(positions.map((position) => position.tokenMint), jupiterApiKey, config.jupiter.tokens_base_url),
+    ]);
+    const items = positions.map((position) => {
+      const result = results.get(position.pool);
+      const data = result?.positions.get(position.id);
+      const token = tokens.get(position.tokenMint);
+      const quote = position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint);
+      const pair = `${token?.symbol ?? token?.name ?? short(position.tokenMint)}/${quote}`;
+      const warning = result?.error
+        ? result.fetchedAt == null ? "⚠️ PnL belum tersedia · pembaruan gagal" : "⚠️ Pembaruan gagal · data terakhir ditampilkan"
+        : result?.fetchedAt != null && Date.now() - result.fetchedAt > 120_000 ? "⚠️ Data terakhir lebih dari 2 menit lalu"
+          : data?.pnl == null ? "⚪ PnL belum tersedia di indeks Meteora" : undefined;
+      return { position, result, data, pair, warning };
+    }).sort((a, b) => {
+      const tie = a.position.firstSeenAt - b.position.firstSeenAt || a.position.id.localeCompare(b.position.id);
+      if (a.data?.pnl == null) return b.data?.pnl == null ? tie : 1;
+      if (b.data?.pnl == null) return -1;
+      return b.data.pnl - a.data.pnl || tie;
+    });
+    const footer = "Estimasi sejak posisi dibuka · Meteora\nTermasuk fee/reward; belum dikurangi gas dan slippage likuidasi.";
+    if (positionId) {
+      const { position, result, data, pair, warning } = items.find((item) => item.position.id === positionId)!;
+      const lastTrigger = db.prepare("SELECT reason,outcome FROM triggers WHERE position_id=? ORDER BY id DESC LIMIT 1")
+        .get(position.id) as { reason: string; outcome: string } | undefined;
+      const signal = lastTrigger ? `${triggerReasonLabel(lastTrigger.reason)} · ${triggerOutcomeLabel(lastTrigger.outcome)}` : "Belum ada sinyal exit";
+      const value = (amount: number | null | undefined) => amount == null ? "Belum tersedia" : `${amount.toFixed(8)} SOL`;
+      return {
+        text: [
+          `📍 <b>DETAIL POSISI · ${escapeHtml(pair)}</b>`, pnlLine(data),
+          position.ignored ? "⏸ <b>SINYAL EXIT DIABAIKAN</b>" : "✅ <b>EXIT AKTIF · DIPANTAU</b>",
+          ...(warning ? [warning] : []), "",
+          `Deposit <b>${value(data?.deposits)}</b>`, `Penarikan ${value(data?.withdrawals)}`,
+          `Fee/reward diklaim ${value(data?.claimed)}`, "",
+          `🪙 Token <b>${escapeHtml(tokenLabel(position.tokenMint, tokens.get(position.tokenMint)))}</b>`,
+          `🧭 Bin step ${escapeHtml(binStepLabel(position.binStep, position.baseFeePercent))}`,
+          `📊 Range bin <b>${position.lowerBinId}–${position.upperBinId}</b> · Bin aktif <b>${position.activeBin ?? "belum tersedia"}</b>`,
+          `🧭 ${escapeHtml(positionRangeStatus(position.activeBin, position.lowerBinId, position.upperBinId, position.binStep))}`,
+          "Persentase OOR: jarak harga dari batas range yang terlewati, berdasarkan bin aktif terakhir.",
+          `🔔 Sinyal terakhir: ${escapeHtml(signal)}`, `🕒 Mulai dipantau: ${wib(position.firstSeenAt)}`, "",
+          `Posisi <code>${escapeHtml(position.id)}</code>`, `Pool <code>${escapeHtml(position.pool)}</code>`, "",
+          `Diambil: ${result?.fetchedAt == null ? "Belum tersedia" : wib(result.fetchedAt)}`,
+          `Saldo diperbarui penyedia: ${data?.updatedAt == null ? "Belum tersedia" : wib(data.updatedAt)}`,
+          ...(result?.error ? [escapeHtml(safeError(result.error).slice(0, 160))] : []), "", footer,
+        ].join("\n"),
+        parseMode: "HTML",
+        replyMarkup: { inline_keyboard: [
+          [{ text: "🔄 Refresh", callback_data: `position:refresh:${position.id}` },
+            { text: position.ignored ? "▶️ Aktifkan exit" : "⏸ Abaikan exit", callback_data: `position:${position.ignored ? "unignore" : "ignore"}:${position.id}` }],
+          [back],
+        ] },
+      };
+    }
+    const pages = Math.ceil(items.length / 5);
+    const page = Math.max(0, Math.min(requestedPage, pages - 1));
+    const shown = items.slice(page * 5, page * 5 + 5);
+    const priced = items.filter((item) => item.data?.pnl != null);
+    const total = priced.reduce((sum, item) => sum + item.data!.pnl!, 0);
+    const ignored = positions.filter((position) => position.ignored).length;
+    const blocks = shown.map(({ position, result, data, pair, warning }, index) => [
+      `${page * 5 + index + 1}. <b>${escapeHtml(pair)}</b> · <code>${escapeHtml(short(position.id))}</code>`,
+      pnlLine(data),
+      `🧭 ${position.activeBin != null && position.activeBin >= position.lowerBinId && position.activeBin <= position.upperBinId ? "Dalam range" : escapeHtml(positionRangeStatus(position.activeBin, position.lowerBinId, position.upperBinId, position.binStep))} · ${position.ignored ? "⏸ Exit diabaikan" : "✅ Exit aktif"}`,
+      `🕒 Diambil: ${result?.fetchedAt == null ? "Belum tersedia" : wib(result.fetchedAt)}`,
+      ...(warning ? [warning] : []),
+    ].join("\n"));
+    const navigation = [];
+    if (page > 0) navigation.push({ text: "⬅️ Sebelumnya", callback_data: `positions:page:${page - 1}` });
+    if (page + 1 < pages) navigation.push({ text: "Berikutnya ➡️", callback_data: `positions:page:${page + 1}` });
+    return {
+      text: [
+        `📍 <b>POSISI &amp; PnL</b> · ${positions.length} posisi`,
+        `PnL terhitung ${priced.length}/${positions.length} · <b>${priced.length && Number.isFinite(total) ? escapeHtml(signed(total, 8) + " SOL") : "Belum tersedia"}</b>`,
+        `Exit aktif ${positions.length - ignored} · Diabaikan ${ignored}`,
+        `Halaman ${page + 1}/${pages} · PnL SOL terbesar`, "", blocks.join("\n\n──────────────\n\n"), "",
+        "Pilih Detail untuk melihat data lengkap dan mengatur exit.", footer,
+      ].join("\n"),
+      parseMode: "HTML",
+      replyMarkup: { inline_keyboard: [
+        ...shown.map((item, index) => [{ text: `${page * 5 + index + 1} · Detail ${item.pair}`, callback_data: `position:view:${item.position.id}` }]),
+        ...(navigation.length ? [navigation] : []),
+        [{ text: "🔄 Refresh", callback_data: `positions:refresh:${page}` }],
+      ] },
+    };
+  };
+
   const onCommand = async (command: string, args: string[]): Promise<Reply | undefined> => {
     switch (command.toLowerCase()) {
-      case "/pnl": {
-        const positions = listPositions(db);
-        const replyMarkup = { inline_keyboard: [[{ text: "🔄 Refresh PnL", callback_data: "cmd:/pnl" }]] };
-        if (!positions.length) return { text: "💰 PnL WALLET · SOL\nBelum ada posisi terbuka yang terdeteksi.", replyMarkup };
-        const [results, tokens] = await Promise.all([
-          agent.pnl.refresh(positions.map((position) => position.pool), true),
-          fetchTokenInfo(positions.map((position) => position.tokenMint), jupiterApiKey, config.jupiter.tokens_base_url),
-        ]);
-        const value = (amount: number | null | undefined) => amount == null ? "belum tersedia" : `${amount.toFixed(8)} SOL`;
-        const blocks = positions.map((position) => {
-          const result = results.get(position.pool);
-          const data = result?.positions.get(position.id);
-          const quote = position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint);
-          const stale = result?.fetchedAt != null && Date.now() - result.fetchedAt > 120_000;
-          return [
-            `${tokenLabel(position.tokenMint, tokens.get(position.tokenMint))}/${quote}`,
-            `Posisi ${position.id}`,
-            `Deposit ${value(data?.deposits)}`,
-            `Penarikan ${value(data?.withdrawals)}`,
-            `Fee/reward diklaim ${value(data?.claimed)}`,
-            `PnL ${value(data?.pnl)}${data?.percent == null ? "" : ` (${data.percent.toFixed(4)}%)`}`,
-            `Diambil ${result?.fetchedAt == null ? "belum tersedia" : wib(result.fetchedAt)}`,
-            `Saldo diperbarui penyedia ${data?.updatedAt == null ? "belum tersedia" : wib(data.updatedAt)}`,
-            ...(result?.error ? [`⚠️ Pembaruan gagal; data terakhir ditampilkan. ${result.error}`] : stale ? ["⚠️ Hasil terakhir lebih dari 2 menit lalu."] : []),
-            ...(!data ? ["PnL posisi belum tersedia di indeks Meteora."] : []),
-          ].join("\n");
-        });
-        return {
-          text: `💰 ESTIMASI PnL WALLET · METEORA\nSejak posisi dibuka · SOL\n\n${blocks.join("\n\n──────────────\n\n")}\n\nDiperiksa tiap 60 detik. Indeks Meteora dapat terlambat.\nTermasuk fee/reward menurut Meteora; belum dikurangi gas dan slippage likuidasi.`,
-          replyMarkup,
-        };
-      }
+      case "/pnl":
+      case "/positions": return positionsReply(0, true);
       case "/status": {
         const [balance, positions] = await Promise.all([connection.getBalance(wallet, "confirmed"), Promise.resolve(listPositions(db))]);
         const ignored = positions.filter((position) => position.ignored).length;
@@ -256,43 +338,6 @@ export function createCommandHandler(options: Options) {
           replyMarkup: configMenuMarkup,
         };
       }
-      case "/positions": {
-        const positions = listPositions(db);
-        if (!positions.length) return { text: "📍 POSISI TERBUKA\nBelum ada posisi terbuka yang sedang dipantau." };
-        const tokenInfo = await fetchTokenInfo(positions.map((position) => position.tokenMint), jupiterApiKey, config.jupiter.tokens_base_url);
-        const blocks = positions.map((position) => {
-          const active = position.activeBin;
-          const lastTrigger = db.prepare("SELECT reason,outcome FROM triggers WHERE position_id=? ORDER BY id DESC LIMIT 1")
-            .get(position.id) as { reason: string; outcome: string } | undefined;
-          const pair = `${short(position.tokenMint)}/${position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint)}`;
-          const signal = lastTrigger
-            ? `${triggerReasonLabel(lastTrigger.reason)} · ${triggerOutcomeLabel(lastTrigger.outcome)}`
-            : "Belum ada sinyal exit";
-          const tokenText = escapeHtml(tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint)));
-          const block = [
-            `${position.ignored ? "⏸ <b>SINYAL EXIT DIABAIKAN</b>" : "🟢 <b>DIPANTAU</b>"} · ${escapeHtml(pair)}`,
-            `🪙 Token <b>${tokenText}</b>`,
-            `🧭 Bin step ${escapeHtml(binStepLabel(position.binStep, position.baseFeePercent))}`,
-            `🪙 Posisi <code>${escapeHtml(position.id)}</code>`,
-            `💧 Pool <code>${escapeHtml(position.pool)}</code>`,
-            `📊 Range bin <b>${position.lowerBinId}–${position.upperBinId}</b>`,
-            `🎯 Bin aktif <b>${active ?? "belum tersedia"}</b>`,
-            `🧭 ${escapeHtml(positionRangeStatus(active, position.lowerBinId, position.upperBinId))}`,
-            `🔔 Sinyal terakhir: ${escapeHtml(signal)}`,
-            `🕒 Mulai dipantau: ${wib(position.firstSeenAt)}`,
-          ].join("\n");
-          return {
-            block,
-            button: {
-              text: position.ignored ? "▶️ Aktifkan exit" : "⏸ Abaikan exit",
-              callback_data: `position:${position.ignored ? "unignore" : "ignore"}:${position.id}`,
-            },
-          };
-        });
-        return { text: `📍 <b>POSISI TERBUKA</b> · ${positions.length}\nGunakan tombol untuk mengatur sinyal exit.\n\n${blocks.map((item) => item.block).join("\n\n──────────────\n\n")}`,
-          replyMarkup: { inline_keyboard: [...blocks.map((item) => [item.button]), [{ text: "💰 PnL wallet", callback_data: "cmd:/pnl" }]] },
-          parseMode: "HTML" };
-      }
       case "/tf": {
         const timeframe = args[0];
         if (timeframe === undefined) return {
@@ -306,8 +351,8 @@ export function createCommandHandler(options: Options) {
       case "/ignore":
       case "/unignore": {
         if (!args[0]) return { text: command === "/ignore"
-          ? "Buka 📍 Posisi, lalu tekan ⏸ Abaikan exit pada posisi yang dipilih."
-          : "Buka 📍 Posisi, lalu tekan ▶️ Aktifkan exit pada posisi yang dipilih." };
+          ? "Buka 📍 Posisi & PnL, pilih Detail, lalu tekan ⏸ Abaikan exit pada posisi yang dipilih."
+          : "Buka 📍 Posisi & PnL, pilih Detail, lalu tekan ▶️ Aktifkan exit pada posisi yang dipilih." };
         const position = findPosition(db, args[0]);
         if (!position) return { text: "Posisi terbuka tidak ditemukan." };
         const ignored = command === "/ignore";
@@ -463,18 +508,20 @@ export function createCommandHandler(options: Options) {
       setMeta(db, "golive_confirmation_until", "0");
       return { text: `🔴 LIVE MODE AKTIF\nWallet ${short(wallet.toBase58())}\nPosisi terbuka ${listPositions(db).length}\nSemua close terkonfirmasi dapat mengirim transaksi.` };
     }
+    const positionsPage = /^positions:(page|refresh):(\d+)$/.exec(data);
+    if (positionsPage) {
+      const page = Number(positionsPage[2]);
+      if (!Number.isSafeInteger(page)) return { text: "Halaman posisi tidak valid." };
+      return positionsReply(page, positionsPage[1] === "refresh");
+    }
+    const positionView = /^position:(view|refresh):([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(data);
+    if (positionView) return positionsReply(0, positionView[1] === "refresh", positionView[2]);
     const positionAction = /^position:(ignore|unignore):([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(data);
     if (positionAction) {
       const position = findPosition(db, positionAction[2]);
-      if (!position) return { text: "Posisi terbuka tidak ditemukan." };
-      const ignored = positionAction[1] === "ignore";
-      if (!setPositionIgnored(db, position.id, ignored)) return { text: "Status posisi berubah sebelum perintah diterapkan." };
-      return { text: notificationCard(
-        ignored ? "⏸ SINYAL EXIT DIABAIKAN" : "▶️ SINYAL EXIT DIAKTIFKAN",
-        [`Posisi ${positionLabel(position.id)}`, ignored
-          ? "Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi. Aktifkan lagi dengan /unignore."
-          : "Sinyal exit kembali dapat dieksekusi sesuai konfigurasi Yolow."],
-      ) };
+      if (!position) return { text: "Posisi tidak lagi terbuka.", replyMarkup: { inline_keyboard: [[{ text: "⬅️ Kembali ke daftar", callback_data: "positions:page:0" }]] } };
+      if (!setPositionIgnored(db, position.id, positionAction[1] === "ignore")) return { text: "Status posisi berubah sebelum perintah diterapkan." };
+      return positionsReply(0, false, position.id);
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);

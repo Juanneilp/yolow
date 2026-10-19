@@ -27,6 +27,7 @@ export const editablePaths = new Set([
   "candles.primary", "candles.fallback_chain", "candles.price_unit", "candles.poll_interval_sec",
   "candles.grace_window_sec", "candles.backfill_candles", "candles.stale_data_pause_sec",
   "notify.low_sol_balance_alert_sol", "notify.heartbeat.enabled", "notify.heartbeat.at_time",
+  "notify.profit_alert.enabled", "notify.profit_alert.interval_minutes", "notify.profit_alert.threshold_percent",
   "history.snapshot_interval_sec", "history.snapshot_retention_days", "history.context_candles",
   "history.csv_export.enabled", "history.backup.enabled", "history.backup.at_time", "history.backup.keep",
   "timezone", "mode.position_poll_interval_sec", "rpc.oor_fallback_poll_interval_sec",

@@ -9,12 +9,46 @@ import DLMM from "../src/meteora.ts";
 import { parseConfig } from "../src/config/config.ts";
 import { applyConfigInPlace, configUpdateNeedsRestart, prepareConfigUpdate, writeConfigAtomically } from "../src/config/config-store.ts";
 import { createCommandHandler } from "../src/telegram/commands.ts";
-import { binStepLabel } from "../src/telegram/presentation.ts";
+import { binStepLabel, positionRangeStatus } from "../src/telegram/presentation.ts";
 import { openDatabase } from "../src/storage/db.ts";
 
 async function exampleConfig() {
   return parseConfig(await readFile("config.example.json", "utf8"));
 }
+
+test("profit alert config defaults old files and validates hot updates", async () => {
+  const old = JSON.parse(await readFile("config.example.json", "utf8"));
+  delete old.notify.profit_alert;
+  const config = parseConfig(JSON.stringify(old));
+  assert.deepEqual(config.notify.profit_alert, { enabled: true, interval_minutes: 5, threshold_percent: 5 });
+  for (const [field, value] of [["enabled", false], ["interval_minutes", 2], ["threshold_percent", 7.5]] as const) {
+    const update = prepareConfigUpdate(config, `notify.profit_alert.${field}`, JSON.stringify(value));
+    assert.equal(update.restartRequired, false);
+    applyConfigInPlace(config, update.config);
+    assert.equal(config.notify.profit_alert[field], value);
+  }
+  for (const [field, value] of [["enabled", 1], ["interval_minutes", 0], ["interval_minutes", 1.5], ["threshold_percent", -1], ["threshold_percent", null]]) {
+    assert.throws(() => prepareConfigUpdate(config, `notify.profit_alert.${field}`, JSON.stringify(value)));
+  }
+  old.notify.profit_alert = null;
+  assert.throws(() => parseConfig(JSON.stringify(old)), /profit_alert must be an object/);
+});
+
+test("range status measures compounded OOR price distance from the crossed boundary", () => {
+  assert.equal(positionRangeStatus(30, 10, 20, 25), "🔺 OOR atas 2,53% · jarak 10 bin");
+  assert.equal(positionRangeStatus(0, 10, 20, 25), "🔻 OOR bawah 2,47% · jarak 10 bin");
+  assert.equal(positionRangeStatus(-90, -110, -100, 25), "🔺 OOR atas 2,53% · jarak 10 bin");
+  assert.equal(positionRangeStatus(-120, -110, -100, 25), "🔻 OOR bawah 2,47% · jarak 10 bin");
+  assert.match(positionRangeStatus(10, 10, 20, 25), /^Dalam range/);
+  assert.match(positionRangeStatus(20, 10, 20, 25), /^Dalam range/);
+  assert.equal(positionRangeStatus(21, 10, 20, 0.1), "🔺 OOR atas <0,01% · jarak 1 bin");
+  for (const step of [undefined, 0, -25, NaN, Infinity]) {
+    assert.equal(positionRangeStatus(30, 10, 20, step), "🔺 OOR atas persentase belum tersedia · jarak 10 bin");
+  }
+  assert.match(positionRangeStatus(1_000_000, 10, 20, 10_000), /persentase belum tersedia/);
+  assert.equal(positionRangeStatus(undefined, 10, 20, 25), "Menunggu data bin aktif");
+  assert.equal(positionRangeStatus(NaN, 10, 20, 25), "Menunggu data bin aktif");
+});
 
 test("config editor validates values and leaves the running config untouched until applied", async () => {
   const current = await exampleConfig();
@@ -87,7 +121,7 @@ test("Telegram /config set persists, hot-applies, and audits a validated setting
   try {
     await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
     const handler = createCommandHandler({
-      agent: { executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+      agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
       db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
       telegramToken: "test", chatId: "test", configPath: path, jupiterApiKey: "test", config,
     });
@@ -103,6 +137,16 @@ test("Telegram /config set persists, hot-applies, and audits a validated setting
     assert.equal(audit.path, "oor_exit.below.trigger_bins");
     assert.equal(audit.old_value, "20");
     assert.equal(audit.new_value, "23");
+    const records = await handler.onCallback("config:section:records");
+    assert.match(records?.text ?? "", /notify\.profit_alert\.interval_minutes = 5/);
+    assert.ok(records?.replyMarkup?.inline_keyboard?.flat().some((button: any) => button.callback_data === "config:edit:notify.profit_alert.threshold_percent"));
+    for (const [field, value] of [["enabled", "false"], ["interval_minutes", "2"], ["threshold_percent", "7.5"]]) {
+      const changed = await handler.onCommand("/config", ["set", `notify.profit_alert.${field}`, value]);
+      assert.match(changed?.text ?? "", /CONFIG DISIMPAN/);
+      assert.match(changed?.text ?? "", /Perubahan aktif sekarang/);
+    }
+    assert.deepEqual(parseConfig(await readFile(path, "utf8")).notify.profit_alert,
+      { enabled: false, interval_minutes: 2, threshold_percent: 7.5 });
   } finally {
     db.close();
     await rm(directory, { recursive: true, force: true });
@@ -117,7 +161,7 @@ test("Telegram config editor navigates sections, toggles booleans, sets presets,
   try {
     await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
     const handler = createCommandHandler({
-      agent: { executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+      agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
       db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
       telegramToken: "test", chatId: "test", configPath: path, jupiterApiKey: "test", config,
     });
@@ -220,32 +264,51 @@ test("Telegram /positions explains range distance and labels paused exit signals
     return new Response(JSON.stringify([{ id: "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump", symbol: "BONK", name: "<b>Bonk</b>" }]), { status: 200 });
   }) as typeof fetch;
   const handler = createCommandHandler({
-    agent: { executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+    agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
     db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
     telegramToken: "test", chatId: "test", config, jupiterApiKey: "test-jupiter-key",
   });
 
   try {
     const initial = await handler.onCommand("/positions", []);
-    assert.match(initial?.text ?? "", /📍 <b>POSISI TERBUKA<\/b> · 1/);
-    assert.match(initial?.text ?? "", /🪙 Token <b>BONK · &lt;b&gt;Bonk&lt;\/b&gt;<\/b>/);
-    assert.match(initial?.text ?? "", /🧭 Bin step 25 · Fee 2%/);
-    assert.match(initial?.text ?? "", /Dalam range · 125 bin dari batas bawah · 37 bin dari batas atas/);
-    assert.match(initial?.text ?? "", /Sinyal terakhir: Belum ada sinyal exit/);
-    assert.ok((initial?.text ?? "").includes(`🪙 Posisi <code>${id}</code>`));
-    assert.ok((initial?.text ?? "").includes(`💧 Pool <code>${pool}</code>`));
+    assert.match(initial?.text ?? "", /POSISI &amp; PnL/);
+    assert.match(initial?.text ?? "", /BONK\/SOL/);
+    assert.match(initial?.text ?? "", /Belum tersedia/);
     assert.equal(initial?.parseMode, "HTML");
-    assert.equal(initial?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "⏸ Abaikan exit");
+    assert.equal(initial?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data, `position:view:${id}`);
+
+    const detail = await handler.onCallback(`position:view:${id}`);
+    assert.match(detail?.text ?? "", /🪙 Token <b>BONK · &lt;b&gt;Bonk&lt;\/b&gt;<\/b>/);
+    assert.match(detail?.text ?? "", /🧭 Bin step 25 · Fee 2%/);
+    assert.match(detail?.text ?? "", /Dalam range · 125 bin dari batas bawah · 37 bin dari batas atas/);
+    assert.match(detail?.text ?? "", /Sinyal terakhir: Belum ada sinyal exit/);
+    assert.ok((detail?.text ?? "").includes(`Posisi <code>${id}</code>`));
+    assert.ok((detail?.text ?? "").includes(`Pool <code>${pool}</code>`));
+    assert.equal(detail?.replyMarkup?.inline_keyboard?.[0]?.[1]?.text, "⏸ Abaikan exit");
+
+    for (const [activeBin, expected] of [[-311, "🔺 OOR atas 2,53% · jarak 10 bin"], [-493, "🔻 OOR bawah 2,47% · jarak 10 bin"]] as const) {
+      db.prepare("UPDATE positions SET active_bin=? WHERE id=?").run(activeBin, id);
+      const list = await handler.onCommand("/positions", []);
+      const outside = await handler.onCallback(`position:view:${id}`);
+      assert.ok(list?.text.includes(expected));
+      assert.ok(outside?.text.includes(expected));
+      assert.match(outside?.text ?? "", /jarak harga dari batas range yang terlewati/);
+    }
+    db.prepare("UPDATE positions SET active_bin=?,bin_step=? WHERE id=?").run(-320, 0.1, id);
+    assert.match((await handler.onCommand("/positions", []))?.text ?? "", /OOR atas &lt;0,01%/);
 
     const menuPositions = await handler.onCallback("cmd:/positions");
-    assert.match(menuPositions?.text ?? "", /📍 <b>POSISI TERBUKA<\/b> · 1/);
+    assert.match(menuPositions?.text ?? "", /POSISI &amp; PnL/);
     assert.match((await handler.onCallback("cmd:/ignore"))?.text ?? "", /tekan ⏸ Abaikan exit/);
 
     const ignored = await handler.onCommand("/ignore", [id]);
     assert.match(ignored?.text ?? "", /Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi/);
-    const paused = await handler.onCommand("/positions", []);
+    const paused = await handler.onCallback(`position:view:${id}`);
     assert.match(paused?.text ?? "", /⏸ <b>SINYAL EXIT DIABAIKAN<\/b>/);
-    assert.equal(paused?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "▶️ Aktifkan exit");
+    assert.equal(paused?.replyMarkup?.inline_keyboard?.[0]?.[1]?.text, "▶️ Aktifkan exit");
+    const resumed = await handler.onCallback(`position:unignore:${id}`);
+    assert.match(resumed?.text ?? "", /EXIT AKTIF/);
+    assert.equal(resumed?.replyMarkup?.inline_keyboard?.[0]?.[1]?.text, "⏸ Abaikan exit");
   } finally {
     globalThis.fetch = originalFetch;
     db.close();

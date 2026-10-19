@@ -39,6 +39,7 @@ export class YolowAgent {
   private timers: NodeJS.Timeout[] = [];
   private readonly backgroundTasks = new Map<string, Promise<void>>();
   private readonly lastCandleSuccessByPool = new Map<string, number>();
+  private lastProfitAlertCheckAt?: number;
 
   constructor(private readonly options: Options) {
     this.pnl = new PositionPnlMonitor(options.wallet.toBase58(), options.config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag");
@@ -129,7 +130,54 @@ export class YolowAgent {
   }
 
   private async refreshPnl(): Promise<void> {
-    await this.pnl.refresh(listPositions(this.options.db).map((position) => position.pool));
+    if (this.stopped) return;
+    const results = await this.pnl.refresh(listPositions(this.options.db).map((position) => position.pool));
+    if (this.stopped) return;
+    const now = Date.now();
+    const { enabled, interval_minutes: interval, threshold_percent: threshold } = this.options.config.notify.profit_alert;
+    if (this.lastProfitAlertCheckAt === undefined) {
+      this.lastProfitAlertCheckAt = now;
+      return;
+    }
+    if (now - this.lastProfitAlertCheckAt < interval * 60_000) return;
+    this.lastProfitAlertCheckAt = now;
+    if (!enabled) return;
+    const qualifying = listPositions(this.options.db).flatMap((position) => {
+      const result = results.get(position.pool);
+      const data = result?.positions.get(position.id);
+      if (result?.error || result?.fetchedAt == null || now - result.fetchedAt > 120_000 ||
+        data?.pnl == null || !Number.isFinite(data.pnl) || data.pnl <= 0 ||
+        data.percent == null || !Number.isFinite(data.percent) || data.percent <= threshold) return [];
+      return [{ position, pnl: data.pnl, percent: data.percent }];
+    }).sort((a, b) => b.percent - a.percent || b.pnl - a.pnl || a.position.id.localeCompare(b.position.id));
+    if (!qualifying.length) return;
+    const tokens = await fetchTokenInfo(qualifying.map(({ position }) => position.tokenMint),
+      this.options.jupiterApiKey, this.options.config.jupiter.tokens_base_url);
+    if (this.stopped || !this.options.config.notify.profit_alert.enabled) return;
+    const openIds = new Set(listPositions(this.options.db).map((position) => position.id));
+    const short = (value: string) => `${value.slice(0, 5)}…${value.slice(-5)}`;
+    const positive = (value: number, digits: number) => `+${value < 10 ** -digits ? `<${(10 ** -digits).toFixed(digits)}` : value.toFixed(digits)}`;
+    const blocks = qualifying.filter(({ position }) => openIds.has(position.id)).map(({ position, pnl, percent }) => {
+      const quote = position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint);
+      const token = tokens.get(position.tokenMint);
+      return `${token?.symbol ?? token?.name ?? short(position.tokenMint)}/${quote} · ${short(position.id)}\n🟢 PnL ${positive(pnl, 8)} SOL (${positive(percent, 4)}%)`;
+    });
+    if (!blocks.length) return;
+    const header = notificationCard("💰 POSISI PROFIT DI ATAS AMBANG", [
+      `${blocks.length} posisi · PnL > ${threshold}% · interval ${interval} menit`,
+      `🕒 ${wibStamp(now, this.options.config.timezone)} WIB`,
+    ]);
+    const footer = "Estimasi Meteora; belum dikurangi gas dan slippage.\nBuka /positions untuk detail.";
+    const pages: string[][] = [[]];
+    for (const block of blocks) {
+      const page = pages[pages.length - 1];
+      if (header.length + page.join("\n\n").length + block.length + footer.length + 80 > 3500) pages.push([block]);
+      else page.push(block);
+    }
+    for (const [index, page] of pages.entries()) {
+      if (this.stopped || !this.options.config.notify.profit_alert.enabled) return;
+      await this.notify(`${header}${pages.length > 1 ? `\nBagian ${index + 1}/${pages.length}` : ""}\n\n${page.join("\n\n")}\n\n${footer}`);
+    }
   }
 
   private timeframeForPool(pool: string): Timeframe {

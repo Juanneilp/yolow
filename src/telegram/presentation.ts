@@ -4,10 +4,17 @@ export function notificationCard(title: string, details: string[]): string {
 
 
 
-export function positionRangeStatus(activeBin: number | undefined, lowerBin: number, upperBin: number): string {
-  if (activeBin === undefined) return "Menunggu data bin aktif";
-  if (activeBin < lowerBin) return `Di bawah range · jarak ${lowerBin - activeBin} bin`;
-  if (activeBin > upperBin) return `Di atas range · jarak ${activeBin - upperBin} bin`;
+export function positionRangeStatus(activeBin: number | undefined, lowerBin: number, upperBin: number, binStep?: number): string {
+  if (activeBin == null || !Number.isFinite(activeBin)) return "Menunggu data bin aktif";
+  if (activeBin < lowerBin || activeBin > upperBin) {
+    const below = activeBin < lowerBin;
+    const delta = activeBin - (below ? lowerBin : upperBin);
+    const percent = binStep != null && Number.isFinite(binStep) && binStep > 0
+      ? Math.abs(Math.expm1(delta * Math.log1p(binStep / 10_000))) * 100 : NaN;
+    const label = !Number.isFinite(percent) ? "persentase belum tersedia"
+      : percent < 0.01 ? "<0,01%" : `${percent.toFixed(2).replace(".", ",")}%`;
+    return `${below ? "🔻 OOR bawah" : "🔺 OOR atas"} ${label} · jarak ${Math.abs(delta)} bin`;
+  }
   return `Dalam range · ${activeBin - lowerBin} bin dari batas bawah · ${upperBin - activeBin} bin dari batas atas`;
 }
 

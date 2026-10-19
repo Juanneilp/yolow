@@ -111,6 +111,11 @@
   },
 
   "notify": {
+    "profit_alert": {
+      "enabled": true,
+      "interval_minutes": 5,
+      "threshold_percent": 5
+    },
     "low_sol_balance_alert_sol": 0.05,
     "heartbeat": {
       "enabled": false,

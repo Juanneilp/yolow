@@ -30,7 +30,11 @@ export type AppConfig = {
   swap: { enabled: boolean; output: "SOL"; min_value_usd: number; slippage_bps: number; max_slippage_bps: number; max_retries: number; close_empty_token_account: boolean };
   top_trending: { enabled: boolean; limit: number; min_market_cap_usd: number; min_token_age_hours: number; max_token_age_days: number; min_holders: number; min_tvl_usd: number; min_organic_score: number; volume_window: "4h" | "12h" | "24h" };
   jupiter: { base_url: string; tokens_base_url: string; price_base_url?: string };
-  notify: { low_sol_balance_alert_sol: number; heartbeat: { enabled: boolean; at_time: string } };
+  notify: {
+    low_sol_balance_alert_sol: number;
+    heartbeat: { enabled: boolean; at_time: string };
+    profit_alert: { enabled: boolean; interval_minutes: number; threshold_percent: number };
+  };
   history: Record<string, any>;
   logging: { level: string };
 };
@@ -103,6 +107,11 @@ export function parseConfig(text: string): AppConfig {
   const execution = object(config.execution, "execution");
   const notify = object(config.notify, "notify");
   const heartbeat = object(notify.heartbeat, "notify.heartbeat");
+  if (notify.profit_alert === undefined) notify.profit_alert = {};
+  const profitAlert = object(notify.profit_alert, "notify.profit_alert");
+  if (profitAlert.enabled === undefined) profitAlert.enabled = true;
+  if (profitAlert.interval_minutes === undefined) profitAlert.interval_minutes = 5;
+  if (profitAlert.threshold_percent === undefined) profitAlert.threshold_percent = 5;
   const csv = object(history.csv_export, "history.csv_export");
   const backup = object(history.backup, "history.backup");
   const poolOverrides = object(config.pool_overrides, "pool_overrides");
@@ -205,6 +214,9 @@ export function parseConfig(text: string): AppConfig {
   integer(priorityFee.max_cap_microlamports, "execution.priority_fee.max_cap_microlamports", 0);
   if (priorityFee.microlamports > priorityFee.max_cap_microlamports) throw new Error("priority fee cannot exceed its configured cap");
   number(notify.low_sol_balance_alert_sol, "notify.low_sol_balance_alert_sol", 0);
+  if (typeof profitAlert.enabled !== "boolean") throw new Error("notify.profit_alert.enabled must be boolean");
+  integer(profitAlert.interval_minutes, "notify.profit_alert.interval_minutes", 1);
+  number(profitAlert.threshold_percent, "notify.profit_alert.threshold_percent", 0);
   if (typeof heartbeat.enabled !== "boolean") throw new Error("notify.heartbeat.enabled must be boolean");
   if (typeof heartbeat.at_time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(heartbeat.at_time)) throw new Error("notify.heartbeat.at_time must use HH:mm");
   if (typeof history.enabled !== "boolean" || typeof history.record_dry_run_trades !== "boolean") throw new Error("history enablement flags must be boolean");
