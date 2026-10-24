@@ -16,7 +16,7 @@ Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per
 
 ### 1. Siapkan kebutuhan
 
-Pasang Git, **Node.js ≥ 22.21.0**, dan npm. Siapkan bot Telegram beserta token dan ID chat, API key Helius, serta public key wallet yang akan dipantau. API key Jupiter diperlukan dengan konfigurasi bawaan karena swap dan Top Trending aktif. GMGN opsional untuk data ATH Top Trending.
+Pasang Git, **Node.js ≥ 22.21.0**, dan npm. Siapkan bot Telegram beserta token dan ID chat, API key Helius, serta public key wallet yang akan dipantau. API key Jupiter diperlukan dengan konfigurasi bawaan karena swap, Top Trending, dan Top Careless Strat aktif. GMGN opsional untuk data ATH Top Trending.
 
 ```sh
 node --version
@@ -82,6 +82,8 @@ pm2 save
 
 Kirim `/menu` atau gunakan tombol **Menu**. Command didaftarkan dengan deskripsi bahasa Indonesia; `/help` menampilkan petunjuk yang sama. Kontrol memerlukan kecocokan **ID chat dan ID pengirim**.
 
+Keyboard bawah menyediakan **🏠 Menu** dan **📍 Posisi & PnL**. Tombol Posisi & PnL membuka tampilan yang sama dengan `/positions`. Kirim `/start` sekali setelah pembaruan untuk mengganti keyboard lama. Top Trending tersedia melalui menu utama atau `/toptrending`.
+
 | Command | Fungsi / nilai bawaan |
 | --- | --- |
 | `/start`, `/menu`, `/help` | Mulai, buka menu, atau lihat bantuan. |
@@ -96,6 +98,7 @@ Kirim `/menu` atau gunakan tombol **Menu**. Command didaftarkan dengan deskripsi
 | `/tag <trade_id\|position_id> <tag>` | Tambahkan tag trade. |
 | `/export` | Unduh jurnal CSV. |
 | `/toptrending` | Ranking token/pool dengan tombol Refresh dan Filter. |
+| `/topcareless` | Screening Top Careless Strat: pool /SOL, urut Simple Fee/TVL 24 jam lalu volume 24 jam. |
 | `/config`, `/config set <path> <nilai>` | Buka editor atau ubah parameter yang diizinkan. |
 | `/retryswap <position_id>` | Minta retry swap dari hasil close terkonfirmasi yang masih tersisa. |
 | `/golive` | Minta aktivasi LIVE; memerlukan keypair dan konfirmasi dalam dua menit. |
@@ -113,6 +116,24 @@ PnL berasal dari indeks Meteora sejak posisi dibuka, termasuk fee/reward menurut
 Default: ringkasan gabungan setiap **5 menit** ketika ada posisi terbuka dengan PnL SOL positif dan **PnL > 5%**; tepat 5% tidak memenuhi ambang. Pesan diulang selama masih ada posisi yang memenuhi syarat, termasuk posisi yang exit-nya diabaikan. Urutan berdasarkan persentase terbesar; ringkasan panjang dibagi menjadi pesan bernomor.
 
 Pemeriksaan mengikuti siklus PnL 60 detik, pertama kali setelah satu interval dari refresh awal. Tidak ada notifikasi ketika data kosong, fetch gagal, atau hasil fetch berumur lebih dari dua menit. Refresh manual tidak memicu pesan. Restart memulai hitungan baru; tidak ada antrean pengiriman ulang atau pengiriman susulan untuk interval terlewat. Fitur ini tidak menjalankan close/swap.
+
+### Top Careless Strat
+
+Buka **🧪 Top Careless Strat** pada menu utama atau kirim `/topcareless`. Default menampilkan 10 pool **token/SOL** dengan market cap token **≥ $1M**, umur token **≥ 3 hari**, dan TVL **≥ $5.000**. Setiap pool menjadi entri sendiri, termasuk beberapa pool dari token yang sama; tidak ada filter holder, Organic Score, atau umur maksimum yang diwarisi dari Top Trending.
+
+Urutan berdasarkan **Simple Fee/TVL 24 jam terbesar**, lalu **volume 24 jam terbesar**, lalu alamat pool untuk nilai yang sama. Estimasi fee = `Volume 24j × (Base fee % / 100)`; Simple Fee/TVL (%) = `Estimasi fee / TVL × 100`, atau langsung `Volume 24j × Base fee (%) / TVL`. Contoh: volume $100.000, base fee 0,3%, dan TVL $10.000 menghasilkan estimasi fee $300 dan Simple Fee/TVL **3,00%**. Base fee berasal dari `pool_config.base_fee_pct` API Meteora. Estimasi ini belum memperhitungkan dynamic fee atau potongan protokol.
+
+Setiap kartu menampilkan base fee dan hasil Simple Fee/TVL 24 jam, serta APR dan Fee/TVL 24 jam dari API sebagai pembanding. APR diannualisasi satu kali dari persentase Fee/TVL 24 jam × 365, tanpa compounding atau farm reward. Data pembanding yang kosong atau tidak valid ditandai **Belum tersedia**. Kartu juga menampilkan market cap, umur, TVL, volume, bin step, CA dan alamat pool lengkap, serta link **Buka Meteora DLMM**. Ini screening baca-saja, bukan pembukaan posisi atau jaminan hasil LP.
+
+Umur token memakai `firstPool.createdAt` Jupiter, bukan umur pool DLMM. Kandidat tanpa data umur, market cap, volume, atau base fee yang valid dilewati; TVL harus positif. Base fee dan volume nol tetap valid. Pool dengan bin step kosong tetap ditampilkan dengan keterangan belum tersedia. Scan sumber maksimal 20 halaman × 100 pool dan tidak berhenti hanya karena jumlah hasil sudah terpenuhi. Urutan pengambilan API tetap Fee/TVL 24 jam lalu volume 24 jam; bot menghitung ranking akhir berdasarkan Simple Fee/TVL. Bila masih ada halaman setelah batas scan, pesan menjelaskan bahwa ranking hanya mencakup pool yang diperiksa, termasuk ketika hasil sudah penuh. Data baru diambil saat fitur dibuka atau **Refresh** ditekan, tanpa RPC Helius; scan yang lebih luas dapat memperlama respons. Daftar panjang dikirim sebagai beberapa pesan sesuai batas Telegram.
+
+Filter terpisah tersedia melalui **Filter** atau **Konfigurasi → Top Careless Strat**; perubahan aktif tanpa restart:
+
+```text
+/config set top_careless.min_tvl_usd 5000
+/config set top_careless.min_market_cap_usd 1000000
+/config set top_careless.min_token_age_days 3
+```
 
 ## Mengubah konfigurasi
 
@@ -139,7 +160,7 @@ Perubahan manual pada `.env` atau `config.json` selalu memerlukan restart. Mode 
 
 ## Referensi parameter
 
-Kolom **Default** mengikuti file contoh yang disertakan repository, bukan konfigurasi pribadi yang sedang berjalan. Sebagian besar field wajib dicantumkan; jangan menganggap seluruh default otomatis diisi bila field dihapus. Parser secara eksplisit mengisi `top_trending.volume_window = "24h"` dan field `notify.profit_alert` yang belum ada. `jupiter.price_base_url` bersifat opsional dengan fallback di kode.
+Kolom **Default** mengikuti file contoh yang disertakan repository, bukan konfigurasi pribadi yang sedang berjalan. Sebagian besar field wajib dicantumkan; jangan menganggap seluruh default otomatis diisi bila field dihapus. Parser secara eksplisit mengisi `top_trending.volume_window = "24h"`, field `top_careless`, dan field `notify.profit_alert` yang belum ada. `jupiter.price_base_url` bersifat opsional dengan fallback di kode.
 
 Path dalam tabel konfigurasi relatif terhadap judul kelompok: misalnya `period` pada kelompok `indicator_exit.indicators.rsi` berarti `indicator_exit.indicators.rsi.period`.
 
@@ -154,7 +175,7 @@ Semua variabel disimpan di `.env`, diubah melalui file, dan dimuat saat startup.
 | `TELEGRAM_USER_ID` | Mengikuti `TELEGRAM_CHAT_ID` | ID numerik pengguna pengontrol; harus diisi untuk grup. |
 | `HELIUS_API_KEY` | Tanpa default; wajib | Credential RPC HTTP dan WebSocket Helius. |
 | `AGENT_WALLET_PUBKEY` | Tanpa default; wajib | Public key wallet yang dipantau. |
-| `JUPITER_API_KEY` | Tanpa default; wajib jika swap/trending aktif | Akses Jupiter; label token bersifat opsional ketika fitur tersebut nonaktif. |
+| `JUPITER_API_KEY` | Tanpa default; wajib jika swap/trending/careless aktif | Akses Jupiter; label token bersifat opsional ketika fitur tersebut nonaktif. |
 | `GMGN_API_KEY` | Kosong; opsional | Data ATH MarketCap Top Trending; tanpa data ditampilkan `N/A`. |
 | `AGENT_KEYPAIR_PATH` | Kosong; wajib untuk LIVE | Lokasi keypair JSON di luar repository; harus cocok dengan wallet. |
 | `DB_PATH` | `./data/yolow.db` | Lokasi database SQLite. |
@@ -310,6 +331,16 @@ Satu lamport = 1.000.000 micro-lamport; satu SOL = 1.000.000.000 lamport. Total 
 
 Hasil menggunakan pool token/SOL; fitur ini tidak membuka posisi atau menjalankan transaksi.
 
+### `top_careless`
+
+| Parameter | Default | Fungsi dan batas nilai | Ubah |
+| --- | --- | --- | --- |
+| `enabled` | `true` | Aktifkan screening Top Careless Strat; memerlukan API key Jupiter. | T |
+| `limit` | `10` | Jumlah pool hasil; integer 1–100. | T |
+| `min_market_cap_usd` | `1000000` | Minimum market cap token; angka ≥ 0 USD. | T |
+| `min_token_age_days` | `3` | Umur minimum berdasarkan first pool Jupiter; angka ≥ 0 hari. | T |
+| `min_tvl_usd` | `5000` | Minimum TVL pool; angka ≥ 0 USD. | T |
+
 ### `jupiter`
 
 | Parameter | Default | Fungsi dan batas nilai | Ubah |
@@ -371,7 +402,7 @@ Detail arsitektur: [ARCHITECTURE.md](ARCHITECTURE.md). Persyaratan keamanan: [PR
 
 | Gejala / batasan | Penjelasan dan tindakan |
 | --- | --- |
-| `Missing required environment variable` | Isi variabel wajib pada `.env`, lalu restart. API key Jupiter diperlukan jika swap atau trending aktif. |
+| `Missing required environment variable` | Isi variabel wajib pada `.env`, lalu restart. API key Jupiter diperlukan jika swap, trending, atau careless aktif. |
 | Bot tidak merespons | Periksa token, ID chat/pengirim, akses jaringan, dan `pm2 logs yolow`. Pastikan hanya satu instance melakukan polling. |
 | Menu command tidak muncul | Registrasi menu memakai Telegram dan tidak menambah RPC Helius. Jika setup gagal, `/help` tetap tersedia; restart untuk mencoba lagi. Tombol menu native hanya dipasang pada chat pribadi. |
 | Posisi baru belum terlihat | Discovery default 300 detik. Periksa wallet dan kegagalan pemindaian sebelum mengubah interval. |

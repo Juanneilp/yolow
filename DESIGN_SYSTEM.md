@@ -54,14 +54,14 @@ The inline menu uses Yolow features:
 | 1 | Status · Posisi & PnL |
 | 2 | History · Statistics |
 | 3 | Timeframe · Export |
-| 4 | Top Trending · Configuration |
+| 4 | Top Trending · Top Careless Strat |
 | 5 | Advanced commands |
 
-The persistent keyboard uses `🏠 Menu` and `🔥 Top Trending`. The Timeframe button opens the same choices as `/tf <5m|15m|30m|1h>`. Display the active timeframe; a timeframe selected in Telegram persists after restart. RSI, BB, and MACD parameters are not editable through the menu. Advanced commands list the argument-based journal and position commands.
+The persistent keyboard uses `🏠 Menu` and `📍 Posisi & PnL`. The position shortcut opens the same view as `/positions`; `/start` replaces an older keyboard with the current buttons. The Timeframe button opens the same choices as `/tf <5m|15m|30m|1h>`. Display the active timeframe; a timeframe selected in Telegram persists after restart. RSI, BB, and MACD parameters are not editable through the menu. Advanced commands list the argument-based journal and position commands.
 
 ### Top Trending results
 
-The persistent Telegram keyboard has **🏠 Menu** and **🔥 Top Trending** buttons. **Menu** and `/menu` show the wallet summary and inline feature grid; **Top Trending** and `/toptrending` show 10 qualifying tokens by default. Use Telegram HTML bold/monospace for hierarchy, a compact filter summary, and a divider between token cards. Each card shows symbol/name, MarketCap, age, holders, SOL-quoted DLMM pair, TVL, Jupiter Organic Score, and 24-hour volume. Show the full mint and pool address as separate `<code>` entities so users can tap to copy the complete values. Only SOL-quoted pools are listed; do not show `/USDC` pairs. Keep actual bot copy in Indonesian. This is a read-only discovery view; do not show buy, swap, or open-position actions.
+**Menu** and `/menu` show the wallet summary and inline feature grid; **Top Trending** in that grid and `/toptrending` show 10 qualifying tokens by default. Older Top Trending keyboard labels remain recognized. Use Telegram HTML bold/monospace for hierarchy, a compact filter summary, and a divider between token cards. Each card shows symbol/name, MarketCap, age, holders, SOL-quoted DLMM pair, TVL, Jupiter Organic Score, and 24-hour volume. Show the full mint and pool address as separate `<code>` entities so users can tap to copy the complete values. Only SOL-quoted pools are listed; do not show `/USDC` pairs. Keep actual bot copy in Indonesian. This is a read-only discovery view; do not show buy, swap, or open-position actions.
 
 Example result block:
 
@@ -76,6 +76,14 @@ Example result block:
 🔗 TOKEN/SOL · 💧 TVL $18.2K · 🌱 Organic 82 · 📈 24h $95K
 CA 6GmAFS123456789ABCDEFGHJKLMNPQRSTUVWXYZUNgx · Pool zxTpi4123456789ABCDEFGHJKLMNPQRSTUVWXYZSCLX
 ```
+
+### Top Careless Strat
+
+Add **🧪 Top Careless Strat** to the inline feature menu and `/topcareless` to native commands and help. Keep the persistent keyboard as Menu and Posisi & PnL. Use a separate filter section with defaults: enabled, 10 results, market cap ≥ $1M, token age ≥ 3 days, and pool TVL ≥ $5K. All five `top_careless` parameters are editable without restart.
+
+Show every qualifying token/SOL pool separately, ranked by Simple Fee/TVL 24h descending, then 24-hour volume descending, then pool address. Estimated base fees = Volume 24h × (base_fee_pct / 100); Simple Fee/TVL (%) = estimated base fees / TVL × 100. Read base_fee_pct from pool_config. Keep APR = Fee/TVL 24h percentage × 365 as a comparison; do not multiply percentages by 100 again or include farm rewards. Missing or invalid comparison data does not exclude a pool. Age comes from Jupiter's first pool timestamp. Do not inherit holder, Organic Score, or maximum-age filters from Top Trending.
+
+Cards show token/SOL, token name, market cap, age, TVL, volume 24h, base fee, Simple Fee/TVL 24h, estimated APR, Fee/TVL 24h, bin step, full copyable CA and pool address, and a **Buka Meteora DLMM** HTML link to `https://app.meteora.ag/dlmm/<pool>`. Example: `Base fee 0.30% · Simple Fee/TVL 24j 3.00%` for volume $100K and TVL $10K. Sanitize labels and escape HTML. Provide Refresh, Filter and Menu navigation. Show unavailable bin step, APR, or Fee/TVL explicitly; exclude records with missing required ranking/filter data or nonpositive TVL. Zero volume and zero base fee are valid. Scan until the final page or the cap of 20 × 100 pools, even when enough results have been found; keep source ordering by Fee/TVL 24h then volume 24h and compute the final ranking locally. If more pages remain beyond the cap, explain that ranking covers only scanned pools even when results are full. Explain empty results when applicable and that the simple estimate excludes dynamic fees and protocol deductions and does not guarantee position returns. Use the existing sender's message splitting for long output.
 
 ### Positions and PnL
 

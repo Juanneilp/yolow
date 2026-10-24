@@ -92,6 +92,14 @@
     "close_empty_token_account": false
   },
 
+  "top_careless": {
+    "enabled": true,
+    "limit": 10,
+    "min_market_cap_usd": 1000000,
+    "min_token_age_days": 3,
+    "min_tvl_usd": 5000
+  },
+
   "top_trending": {
     "enabled": true,
     "limit": 10,

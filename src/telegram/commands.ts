@@ -5,6 +5,7 @@ import { applyConfigInPlace, editablePaths, prepareConfigUpdate, writeConfigAtom
 import { loadSigner, setLiveMode } from "../execution/executor.ts";
 import { listPositions, setPositionIgnored } from "../positions/monitor.ts";
 import type { PositionPnl } from "../positions/pnl.ts";
+import { fetchTopCareless, formatTopCareless } from "../market-data/top-careless.ts";
 import { getMeta, setMeta } from "../storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { YolowAgent } from "../agent.ts";
@@ -35,9 +36,12 @@ const configMenuMarkup = { inline_keyboard: [
   [{ text: "🎯 Strategi exit", callback_data: "config:section:strategy" }, { text: "📉 OOR", callback_data: "config:section:oor" }],
   [{ text: "🔥 Top Trending", callback_data: "config:section:trending" }, { text: "⚡ Eksekusi & swap", callback_data: "config:section:execution" }],
   [{ text: "🕯 Data candle", callback_data: "config:section:data" }, { text: "🔔 Notifikasi & riwayat", callback_data: "config:section:records" }],
-  [{ text: "🖥 Sistem", callback_data: "config:section:system" }],
+  [{ text: "🧪 Top Careless Strat", callback_data: "config:section:careless" }, { text: "🖥 Sistem", callback_data: "config:section:system" }],
 ] };
 const configSections: Record<string, { title: string; paths: string[] }> = {
+  careless: { title: "TOP CARELESS STRAT", paths: [
+    "top_careless.enabled", "top_careless.limit", "top_careless.min_market_cap_usd", "top_careless.min_token_age_days", "top_careless.min_tvl_usd",
+  ] },
   strategy: { title: "STRATEGI EXIT", paths: [
     "indicator_exit.enabled", "indicator_exit.timeframe", "indicator_exit.min_age_candles",
     "indicator_exit.indicators.rsi.period", "indicator_exit.indicators.rsi.overbought",
@@ -137,8 +141,8 @@ export function createCommandHandler(options: Options) {
   const applyValidatedConfigUpdate = async (path: string, rawValue: string): Promise<Reply> => {
     try {
       const update = prepareConfigUpdate(config, path, rawValue);
-      if ((update.config.swap.enabled || update.config.top_trending.enabled) && !jupiterApiKey) {
-        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau Top Trending.");
+      if ((update.config.swap.enabled || update.config.top_trending.enabled || update.config.top_careless.enabled) && !jupiterApiKey) {
+        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap, Top Trending, atau Top Careless Strat.");
       }
       await writeConfigAtomically(configPath, `${JSON.stringify(update.config, null, 2)}\n`);
       applyConfigInPlace(config, update.config);
@@ -302,6 +306,19 @@ export function createCommandHandler(options: Options) {
 
   const onCommand = async (command: string, args: string[]): Promise<Reply | undefined> => {
     switch (command.toLowerCase()) {
+      case "/topcareless": {
+        const replyMarkup = { inline_keyboard: [[
+          { text: "🔄 Refresh", callback_data: "cmd:/topcareless" },
+          { text: "⚙️ Filter", callback_data: "config:section:careless" },
+        ]] };
+        if (!config.top_careless.enabled) return { text: "🧪 TOP CARELESS STRAT\nFitur ini sedang dinonaktifkan di config.json.", replyMarkup };
+        try {
+          if (!jupiterApiKey) throw new Error("JUPITER_API_KEY dibutuhkan untuk Top Careless Strat.");
+          const result = await fetchTopCareless(config.top_careless, jupiterApiKey,
+            config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag", config.jupiter.tokens_base_url);
+          return { text: formatTopCareless(result, config.top_careless, config.timezone), parseMode: "HTML", replyMarkup };
+        } catch (error) { return { text: `🧪 TOP CARELESS STRAT\nScreening gagal: ${safeError(error)}`, replyMarkup }; }
+      }
       case "/pnl":
       case "/positions": return positionsReply(0, true);
       case "/status": {
@@ -525,7 +542,7 @@ export function createCommandHandler(options: Options) {
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);
-      if (!["/status", "/positions", "/pnl", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
+      if (!["/status", "/positions", "/pnl", "/topcareless", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
       return onCommand(command, args);
     }
     return undefined;

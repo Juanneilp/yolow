@@ -1,4 +1,5 @@
 import type { Timeframe } from "../domain/types.ts";
+import type { TopCarelessConfig } from "../market-data/top-careless.ts";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { redactSecrets } from "../security.ts";
 
@@ -29,6 +30,7 @@ export type AppConfig = {
   execution: { priority_fee: Record<string, any>; max_retries: number };
   swap: { enabled: boolean; output: "SOL"; min_value_usd: number; slippage_bps: number; max_slippage_bps: number; max_retries: number; close_empty_token_account: boolean };
   top_trending: { enabled: boolean; limit: number; min_market_cap_usd: number; min_token_age_hours: number; max_token_age_days: number; min_holders: number; min_tvl_usd: number; min_organic_score: number; volume_window: "4h" | "12h" | "24h" };
+  top_careless: TopCarelessConfig;
   jupiter: { base_url: string; tokens_base_url: string; price_base_url?: string };
   notify: {
     low_sol_balance_alert_sol: number;
@@ -103,6 +105,15 @@ export function parseConfig(text: string): AppConfig {
   const oor = object(config.oor_exit, "oor_exit");
   const swap = object(config.swap, "swap");
   const trending = object(config.top_trending, "top_trending");
+  if (config.top_careless === undefined) config.top_careless = {};
+  const careless = object(config.top_careless, "top_careless");
+  for (const [key, value] of Object.entries({ enabled: true, limit: 10, min_market_cap_usd: 1_000_000, min_token_age_days: 3, min_tvl_usd: 5_000 })) {
+    if (careless[key] === undefined) careless[key] = value;
+  }
+  if (typeof careless.enabled !== "boolean") throw new Error("top_careless.enabled must be boolean");
+  integer(careless.limit, "top_careless.limit", 1);
+  if (careless.limit > 100) throw new Error("top_careless.limit cannot exceed 100");
+  for (const key of ["min_market_cap_usd", "min_token_age_days", "min_tvl_usd"]) number(careless[key], `top_careless.${key}`, 0);
   const history = object(config.history, "history");
   const execution = object(config.execution, "execution");
   const notify = object(config.notify, "notify");

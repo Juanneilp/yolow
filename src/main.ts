@@ -45,8 +45,8 @@ if (telegramUserId && !/^\d+$/.test(telegramUserId)) throw new Error("TELEGRAM_U
 const heliusKey = requiredEnv("HELIUS_API_KEY");
 const wallet = new PublicKey(requiredEnv("AGENT_WALLET_PUBKEY"));
 const jupiterApiKey = process.env.JUPITER_API_KEY?.trim();
-if ((config.swap.enabled || config.top_trending.enabled) && !jupiterApiKey) {
-  throw new Error("JUPITER_API_KEY is required when swaps or Top Trending are enabled");
+if ((config.swap.enabled || config.top_trending.enabled || config.top_careless.enabled) && !jupiterApiKey) {
+  throw new Error("JUPITER_API_KEY is required when swaps, Top Trending, or Top Careless Strat are enabled");
 }
 
 function addApiKey(endpoint: string): string {

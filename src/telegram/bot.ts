@@ -28,6 +28,7 @@ export const botCommands = [
   { command: "tf", description: "Timeframe indikator: /tf [5m|15m|30m|1h]" },
   { command: "export", description: "Unduh jurnal trade sebagai CSV" },
   { command: "toptrending", description: "Lihat token dan pool Top Trending" },
+  { command: "topcareless", description: "Screening pool /SOL: Simple Fee/TVL 24j, lalu volume 24j" },
   { command: "config", description: "Buka konfigurasi; ubah dengan /config set <path> <nilai>" },
   { command: "ignore", description: "Abaikan sinyal exit: /ignore <position_id>" },
   { command: "unignore", description: "Aktifkan sinyal exit: /unignore <position_id>" },
@@ -40,13 +41,14 @@ export const botCommands = [
 
 const commandHelp = ["🧰 DAFTAR COMMAND", ...botCommands.map(({ command, description }) => `/${command} — ${description}`)].join("\n");
 
-export function actionForMessage(text: string): "menu" | "start" | "help" | "top_trending" | undefined {
+export function actionForMessage(text: string): "menu" | "start" | "help" | "positions" | "top_trending" | undefined {
   const messageText = text.trim();
   const command = messageText.split(/\s+/)[0]?.split("@")[0]?.toLowerCase();
   const label = messageText.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
   if (label === "menu" || command === "/menu") return "menu";
   if (command === "/start") return "start";
   if (command === "/help") return "help";
+  if (label === "posisi & pnl") return "positions";
   if (command === "/toptrending" || label === "top trending") return "top_trending";
 }
 
@@ -60,15 +62,16 @@ export const mainMenuMarkup = { inline_keyboard: [
   [{ text: "📊 Status", callback_data: "cmd:/status" }, { text: "📍 Posisi & PnL", callback_data: "cmd:/positions" }],
   [{ text: "📒 Riwayat", callback_data: "cmd:/history" }, { text: "📈 Statistik", callback_data: "cmd:/stats" }],
   [{ text: "⏱ Timeframe", callback_data: "cmd:/tf" }, { text: "📤 Export CSV", callback_data: "cmd:/export" }],
-  [{ text: "🔥 Top Trending", callback_data: "top_trending" }, { text: "⚙️ Konfigurasi", callback_data: "cmd:/config" }],
+  [{ text: "🔥 Top Trending", callback_data: "top_trending" }, { text: "🧪 Top Careless Strat", callback_data: "cmd:/topcareless" }],
   [{ text: "⏸ Abaikan exit", callback_data: "cmd:/ignore" }, { text: "▶️ Aktifkan exit", callback_data: "cmd:/unignore" }],
   [{ text: "📖 Detail trade", callback_data: "cmd:/trade" }, { text: "🔁 Coba swap", callback_data: "cmd:/retryswap" }],
   [{ text: "📝 Catatan trade", callback_data: "cmd:/note" }, { text: "🏷 Tag trade", callback_data: "cmd:/tag" }],
   [{ text: "🔴 Live mode", callback_data: "cmd:/golive" }, { text: "🧰 Bantuan command", callback_data: "help" }],
+  [{ text: "⚙️ Konfigurasi", callback_data: "cmd:/config" }],
 ] };
 
 const quickAccessMarkup = {
-  keyboard: [[{ text: "🏠 Menu" }, { text: "🔥 Top Trending" }]],
+  keyboard: [[{ text: "🏠 Menu" }, { text: "📍 Posisi & PnL" }]],
   resize_keyboard: true,
   is_persistent: true,
   input_field_placeholder: "Pilih fitur Yolow",
@@ -122,6 +125,7 @@ export async function runBot(options: BotOptions): Promise<void> {
       await telegram("sendMessage", {
         chat_id: options.chatId,
         text: chunk,
+        link_preview_options: { is_disabled: true },
         ...(index === 0 && replyMarkup ? { reply_markup: replyMarkup } : {}),
         ...(parseMode ? { parse_mode: parseMode } : {}),
       });
@@ -139,6 +143,7 @@ export async function runBot(options: BotOptions): Promise<void> {
         chat_id: message.chat.id,
         message_id: message.message_id,
         text,
+        link_preview_options: { is_disabled: true },
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
         ...(parseMode ? { parse_mode: parseMode } : {}),
       });
@@ -241,7 +246,7 @@ export async function runBot(options: BotOptions): Promise<void> {
           } else if (action === "top_trending") {
             await showTopTrending();
           } else if (options.onCommand) {
-            const [rawCommand = "", ...args] = messageText.trim().split(/\s+/);
+            const [rawCommand = "", ...args] = (action === "positions" ? "/positions" : messageText).trim().split(/\s+/);
             const command = rawCommand.split("@")[0];
             if (command.startsWith("/")) {
               const reply = await options.onCommand(command, args);

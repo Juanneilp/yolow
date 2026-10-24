@@ -25,16 +25,18 @@ type Token = {
   holders?: number | string;
 };
 
-type Pool = {
+export type Pool = {
   address?: string;
   name?: string;
   token_x?: Token;
   token_y?: Token;
   tvl?: number | string;
   volume?: Record<string, number | string | undefined>;
+  fee_tvl_ratio?: Record<string, number | string | undefined>;
+  pool_config?: { bin_step?: number; base_fee_pct?: number | string };
 };
 
-type JupiterToken = {
+export type JupiterToken = {
   id?: string;
   name?: string;
   symbol?: string;
@@ -138,7 +140,7 @@ export function selectTopTrending(
     .slice(0, config.limit);
 }
 
-async function getJson<T>(url: URL, headers: Record<string, string> = {}): Promise<T> {
+export async function getJson<T>(url: URL, headers: Record<string, string> = {}): Promise<T> {
   let response: Response;
   try {
     response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
