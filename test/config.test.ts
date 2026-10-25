@@ -52,15 +52,12 @@ test("range status measures compounded OOR price distance from the crossed bound
 
 test("config editor validates values and leaves the running config untouched until applied", async () => {
   const current = await exampleConfig();
-  const update = prepareConfigUpdate(current, "oor_exit.below.trigger_bins", "24");
-  assert.equal(current.oor_exit.below.trigger_bins, 20);
-  assert.equal(update.config.oor_exit.below.trigger_bins, 24);
-  assert.equal(update.oldValue, 20);
+  const update = prepareConfigUpdate(current, "automation.oor_below_percent", "24");
+  assert.equal(current.automation.oor_below_percent, 30);
+  assert.equal(update.config.automation.oor_below_percent, 24);
+  assert.equal(update.oldValue, 30);
   assert.equal(update.newValue, 24);
-  assert.throws(() => prepareConfigUpdate(current, "oor_exit.below.trigger_bins", "0"), /must be a number >= 1/);
-  assert.equal(prepareConfigUpdate(current, "top_trending.min_token_age_hours", "5").config.top_trending.min_token_age_hours, 5);
-  assert.equal(prepareConfigUpdate(current, "top_trending.volume_window", "\"4h\"").config.top_trending.volume_window, "4h");
-  assert.throws(() => prepareConfigUpdate(current, "top_trending.volume_window", "\"6h\""), /volume_window/);
+  assert.throws(() => prepareConfigUpdate(current, "automation.oor_below_percent", "0"), /must be a number >= 0.01/);
   assert.throws(() => prepareConfigUpdate(current, "mode.dry_run", "false"), /tidak dapat diubah/);
   assert.throws(() => prepareConfigUpdate(current, "mode.shadow_candles", "false"), /belum diterapkan/);
   assert.throws(() => prepareConfigUpdate(current, "rpc.http_base.api_key", "secret"), /Secret/);
@@ -83,22 +80,21 @@ test("config endpoints pin credential-bearing APIs and reject embedded keys", as
   assert.throws(() => parseConfig(JSON.stringify(secretField)), /tidak boleh menyimpan API key/);
 });
 
-test("config editor supports pool overrides and keeps object references during hot apply", async () => {
-  const current = await exampleConfig();
-  const pool = "8bRqShHqwgZfrtqxK3bjE7Gu78Enm8iik5NTp3bfnf1E";
-  const update = prepareConfigUpdate(current, `pool_overrides.${pool}.oor_exit.below.trigger_bins`, "28");
-  assert.equal(update.config.pool_overrides[pool].oor_exit?.below?.trigger_bins, 28);
-  const indicatorSettings = current.indicator_exit;
-  const disabled = prepareConfigUpdate(current, "indicator_exit.enabled", "false");
-  applyConfigInPlace(current, disabled.config);
-  assert.equal(current.indicator_exit, indicatorSettings);
-  assert.equal(current.indicator_exit.enabled, false);
+test("retired strategies are discarded and automation hot apply keeps references", async () => {
+  const raw = JSON.parse(await readFile("config.example.json", "utf8"));
+  raw.indicator_exit = { enabled: true }; raw.oor_exit = { below: { trigger_bins: 1 } }; raw.pool_overrides = {};
+  const current = parseConfig(JSON.stringify(raw));
+  for (const key of ["indicator_exit", "oor_exit", "pool_overrides"]) assert.equal(Object.hasOwn(current, key), false);
+  assert.throws(() => prepareConfigUpdate(current, "oor_exit.below.trigger_bins", "1"));
+  const settings = current.automation;
+  applyConfigInPlace(current, prepareConfigUpdate(current, "automation.enabled", "true").config);
+  assert.equal(current.automation, settings); assert.equal(settings.enabled, true);
 });
 
 test("config editor flags settings that need process restart", () => {
-  assert.equal(configUpdateNeedsRestart("candles.poll_interval_sec"), true);
+  assert.equal(configUpdateNeedsRestart("mode.position_poll_interval_sec"), true);
   assert.equal(configUpdateNeedsRestart("rpc.http_base"), true);
-  assert.equal(configUpdateNeedsRestart("oor_exit.below.trigger_bins"), false);
+  assert.equal(configUpdateNeedsRestart("automation.oor_below_percent"), false);
 });
 
 test("config file is atomically replaced with validated JSON", async () => {
@@ -121,21 +117,21 @@ test("Telegram /config set persists, hot-applies, and audits a validated setting
   try {
     await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
     const handler = createCommandHandler({
-      agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+      agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true } } as any,
       db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
       telegramToken: "test", chatId: "test", configPath: path, jupiterApiKey: "test", config,
     });
     const menu = await handler.onCommand("/config", []);
     assert.match(menu?.text ?? "", /KONFIGURASI YOLOW/);
-    assert.equal(menu?.replyMarkup?.inline_keyboard?.[0]?.[1]?.callback_data, "config:section:oor");
-    const reply = await handler.onCommand("/config", ["set", "oor_exit.below.trigger_bins", "23"]);
+    assert.equal(menu?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data, "config:section:automation");
+    const reply = await handler.onCommand("/config", ["set", "automation.oor_below_percent", "23"]);
     assert.match(reply?.text ?? "", /CONFIG DISIMPAN/);
-    assert.equal(config.oor_exit.below.trigger_bins, 23);
+    assert.equal(config.automation.oor_below_percent, 23);
     const saved = parseConfig(await readFile(path, "utf8"));
-    assert.equal(saved.oor_exit.below.trigger_bins, 23);
+    assert.equal(saved.automation.oor_below_percent, 23);
     const audit = db.prepare("SELECT path,old_value,new_value FROM config_changes").get() as Record<string, string>;
-    assert.equal(audit.path, "oor_exit.below.trigger_bins");
-    assert.equal(audit.old_value, "20");
+    assert.equal(audit.path, "automation.oor_below_percent");
+    assert.equal(audit.old_value, "30");
     assert.equal(audit.new_value, "23");
     const records = await handler.onCallback("config:section:records");
     assert.match(records?.text ?? "", /notify\.profit_alert\.interval_minutes = 5/);
@@ -161,74 +157,77 @@ test("Telegram config editor navigates sections, toggles booleans, sets presets,
   try {
     await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
     const handler = createCommandHandler({
-      agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+      agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true } } as any,
       db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
       telegramToken: "test", chatId: "test", configPath: path, jupiterApiKey: "test", config,
     });
 
     // Section view lists parameters as buttons.
-    const section = await handler.onCallback("config:section:trending");
+    const section = await handler.onCallback("config:section:data");
     const sectionButtons = (section?.replyMarkup?.inline_keyboard as any[][]).flat();
-    assert.ok(sectionButtons.some((button) => button.callback_data === "config:edit:top_trending.volume_window"));
+    assert.ok(sectionButtons.some((button) => button.callback_data === "config:edit:candles.price_unit"));
 
-    // Editor shows the current value and window presets.
-    const editor = await handler.onCallback("config:edit:top_trending.volume_window");
-    assert.match(editor?.text ?? "", /top_trending\.volume_window/);
-    assert.match(editor?.text ?? "", /24h/);
+    // Editor shows the current value and price unit presets.
+    const editor = await handler.onCallback("config:edit:candles.price_unit");
+    assert.match(editor?.text ?? "", /candles\.price_unit/);
+    assert.match(editor?.text ?? "", /usd/);
     assert.equal(editor?.parseMode, "HTML");
     const presets = (editor?.replyMarkup?.inline_keyboard as any[][]).flat()
-      .filter((button) => button.callback_data.startsWith("config:set:top_trending.volume_window:"));
-    assert.deepEqual(presets.map((button) => button.callback_data.split(":").at(-1)), ["4h", "12h", "24h"]);
+      .filter((button) => button.callback_data.startsWith("config:set:candles.price_unit:"));
+    assert.deepEqual(presets.map((button) => button.callback_data.split(":").at(-1)), ["usd", "sol"]);
 
     // Tapping a preset persists, hot-applies, and audits.
-    const applied = await handler.onCallback("config:set:top_trending.volume_window:4h");
+    const applied = await handler.onCallback("config:set:candles.price_unit:sol");
     assert.match(applied?.text ?? "", /CONFIG DISIMPAN/);
-    assert.equal(config.top_trending.volume_window, "4h");
-    assert.equal(parseConfig(await readFile(path, "utf8")).top_trending.volume_window, "4h");
+    assert.equal(config.candles.price_unit, "sol");
+    assert.equal(parseConfig(await readFile(path, "utf8")).candles.price_unit, "sol");
     const audit = db.prepare("SELECT path,old_value,new_value FROM config_changes ORDER BY id DESC LIMIT 1").get() as Record<string, string>;
-    assert.equal(audit.path, "top_trending.volume_window");
-    assert.equal(audit.old_value, "\"24h\"");
-    assert.equal(audit.new_value, "\"4h\"");
+    assert.equal(audit.path, "candles.price_unit");
+    assert.equal(audit.old_value, "\"usd\"");
+    assert.equal(audit.new_value, "\"sol\"");
 
     // Boolean toggle applies immediately.
-    const toggled = await handler.onCallback("config:set:top_trending.enabled:false");
+    const toggled = await handler.onCallback("config:set:top_careless.enabled:false");
     assert.match(toggled?.text ?? "", /CONFIG DISIMPAN/);
-    assert.equal(config.top_trending.enabled, false);
+    assert.equal(config.top_careless.enabled, false);
 
     // Typed input flow: request input, then send the raw value as a message.
-    const inputPrompt = await handler.onCallback("config:input:top_trending.min_holders");
+    const inputPrompt = await handler.onCallback("config:input:top_careless.min_tvl_usd");
     assert.match(inputPrompt?.text ?? "", /KIRIM NILAI BARU/);
     const typed = await handler.onText("2500");
     assert.match(typed?.text ?? "", /CONFIG DISIMPAN/);
-    assert.equal(config.top_trending.min_holders, 2500);
-    assert.equal(parseConfig(await readFile(path, "utf8")).top_trending.min_holders, 2500);
+    assert.equal(config.top_careless.min_tvl_usd, 2500);
+    assert.equal(parseConfig(await readFile(path, "utf8")).top_careless.min_tvl_usd, 2500);
 
     // Typing "batal" cancels the pending input without changing anything.
-    await handler.onCallback("config:input:top_trending.min_holders");
+    await handler.onCallback("config:input:top_careless.min_tvl_usd");
     const cancelled = await handler.onText("batal");
     assert.match(cancelled?.text ?? "", /dibatalkan/);
-    assert.equal(config.top_trending.min_holders, 2500);
+    assert.equal(config.top_careless.min_tvl_usd, 2500);
 
     // Menu navigation is not swallowed, and abandons the pending input so stray text is ignored.
-    await handler.onCallback("config:input:top_trending.min_holders");
-    assert.equal(await handler.onText("Menu"), undefined);
+    for (const label of ["Menu", "📍 Posisi & PnL", "🧪 Top Careless"]) {
+      await handler.onCallback("config:input:top_careless.min_tvl_usd");
+      assert.equal(await handler.onText(label), undefined);
+      assert.equal(await handler.onText("9999"), undefined);
+    }
     assert.equal(await handler.onText("/status"), undefined);
     assert.equal(await handler.onText("9999"), undefined);
-    assert.equal(config.top_trending.min_holders, 2500);
+    assert.equal(config.top_careless.min_tvl_usd, 2500);
 
     // The cancel button clears the pending input as well.
-    const prompt = await handler.onCallback("config:input:top_trending.min_holders");
+    const prompt = await handler.onCallback("config:input:top_careless.min_tvl_usd");
     assert.equal((prompt?.replyMarkup?.inline_keyboard as any[][])[0][0].callback_data, "config:cancel");
     const cancelButton = await handler.onCallback("config:cancel");
     assert.match(cancelButton?.text ?? "", /dibatalkan/);
     assert.equal(await handler.onText("7777"), undefined);
-    assert.equal(config.top_trending.min_holders, 2500);
+    assert.equal(config.top_careless.min_tvl_usd, 2500);
 
     // Invalid typed values keep the running config untouched.
-    await handler.onCallback("config:input:top_trending.min_holders");
+    await handler.onCallback("config:input:top_careless.min_tvl_usd");
     const invalid = await handler.onText("\"bukan angka\"");
     assert.match(invalid?.text ?? "", /CONFIG TIDAK DIUBAH/);
-    assert.equal(config.top_trending.min_holders, 2500);
+    assert.equal(config.top_careless.min_tvl_usd, 2500);
 
     // Non-editable paths are rejected before an editor opens.
     assert.match((await handler.onCallback("config:edit:mode.dry_run"))?.text ?? "", /tidak dapat diubah/);
@@ -236,10 +235,10 @@ test("Telegram config editor navigates sections, toggles booleans, sets presets,
     assert.match((await handler.onCallback("config:set:mode.dry_run:false"))?.text ?? "", /CONFIG TIDAK DIUBAH/);
 
     // Navigating away from the input prompt cancels the pending input.
-    await handler.onCallback("config:input:top_trending.min_holders");
-    await handler.onCallback("config:section:trending");
+    await handler.onCallback("config:input:top_careless.min_tvl_usd");
+    await handler.onCallback("config:section:data");
     assert.equal(await handler.onText("9999"), undefined);
-    assert.equal(config.top_trending.min_holders, 2500);
+    assert.equal(config.top_careless.min_tvl_usd, 2500);
   } finally {
     db.close();
     await rm(directory, { recursive: true, force: true });
@@ -248,6 +247,7 @@ test("Telegram config editor navigates sections, toggles booleans, sets presets,
 
 test("Telegram /positions explains range distance and labels paused exit signals clearly", async () => {
   const config = await exampleConfig();
+  config.automation.enabled = true;
   const db = openDatabase(":memory:");
   const id = "AiEkQGg5thkPRXG4VPSyfoKCXJDbPi8P9fKMFuutuyn1";
   const pool = "4s2bzyM1CStvWCUC1r1q8Maoj6UmkqnBqnwBEFtDtpko";
@@ -264,7 +264,7 @@ test("Telegram /positions explains range distance and labels paused exit signals
     return new Response(JSON.stringify([{ id: "BXoHJ123456789ABCDEFGHJKLMNPQRSTUVWXYZkpump", symbol: "BONK", name: "<b>Bonk</b>" }]), { status: 200 });
   }) as typeof fetch;
   const handler = createCommandHandler({
-    agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true }, getTimeframe: () => "15m" } as any,
+    agent: { pnl: { refresh: async () => new Map() }, executor: { isDryRun: () => true } } as any,
     db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
     telegramToken: "test", chatId: "test", config, jupiterApiKey: "test-jupiter-key",
   });
@@ -344,4 +344,58 @@ test("Meteora bin step and base fee are separate values", () => {
   const fee = DLMM.calculateFeeInfo(20_000, 100, 0).baseFeeRatePercentage;
   assert.equal(fee.toString(), "2");
   assert.equal(binStepLabel(100, Number(fee.toString())), "100 · Fee 2%");
+});
+
+
+test("old Trending config is optional, ignored, and cannot be edited", async () => {
+  const raw = JSON.parse(await readFile("config.example.json", "utf8"));
+  assert.equal(Object.hasOwn(raw, "top_trending"), false);
+  const current = parseConfig(JSON.stringify(raw));
+  raw.top_trending = { enabled: true, limit: -1 };
+  const legacy = parseConfig(JSON.stringify(raw));
+  assert.deepEqual(legacy.top_careless, current.top_careless);
+  for (const config of [current, legacy]) {
+    assert.throws(() => prepareConfigUpdate(config, "top_trending.enabled", "false"));
+    assert.throws(() => prepareConfigUpdate(config, "top_trending.limit", "10"));
+  }
+});
+
+test("journal and settings menus retain useful actions with empty or populated history", async () => {
+  const config = await exampleConfig();
+  const db = openDatabase(":memory:");
+  try {
+    const handler = createCommandHandler({
+      agent: { executor: { isDryRun: () => true } } as any,
+      db, connection: {} as any, wallet: new PublicKey("11111111111111111111111111111111"),
+      telegramToken: "test", chatId: "test", config, jupiterApiKey: "test",
+    });
+    const empty = await handler.onCallback("cmd:/history");
+    assert.match(empty?.text ?? "", /Jurnal masih kosong/);
+    db.prepare(`INSERT INTO trade_history
+      (trade_id,mode,position_id,pool,token_mint,first_seen_at,entry_source,lower_bin,upper_bin,config_snapshot)
+      VALUES(12,'dry_run','position','pool','mint',?,'test',1,2,'{}')`).run(Date.now());
+    const history = await handler.onCommand("/history", ["5"]);
+    assert.match(history?.text ?? "", /RIWAYAT 1 TRADE/);
+    assert.match(history?.text ?? "", /#12/);
+    for (const reply of [empty, history]) {
+      const actions = reply?.replyMarkup?.inline_keyboard.flat().map((button: any) => button.callback_data);
+      assert.ok(actions.includes("cmd:/stats"));
+      assert.ok(actions.includes("cmd:/export"));
+      for (const command of ["/trade", "/note", "/tag", "/retryswap"]) assert.ok(reply?.text.includes(command));
+    }
+    assert.equal(history?.replyMarkup?.inline_keyboard[0][0].callback_data, "cmd:/history 5");
+    assert.match((await handler.onCallback("cmd:/stats"))?.text ?? "", /STATISTIK ALL/);
+    assert.match((await handler.onCommand("/trade", ["12"]))?.text ?? "", /TRADE #12/);
+    const settings = await handler.onCallback("cmd:/config");
+    const actions = settings?.replyMarkup?.inline_keyboard.flat().map((button: any) => button.callback_data);
+    assert.ok(actions.includes("config:section:automation"));
+    assert.ok(actions.includes("cmd:/golive"));
+    assert.equal(actions.filter((data: string) => data.startsWith("config:section:")).length, 6);
+    assert.ok(actions.every((data: string) => !data.includes("trending")));
+    assert.match((await handler.onCommand("/tf", []))?.text ?? "", /sudah dihapus/);
+    assert.match((await handler.onCallback("cmd:/golive"))?.text ?? "", /keypair|AGENT_KEYPAIR_PATH/);
+    for (const callback of ["config:edit:top_trending.limit", "config:input:top_trending.limit", "config:set:top_trending.limit:10"]) {
+      assert.match((await handler.onCallback(callback))?.text ?? "", /tidak dapat diubah|CONFIG TIDAK DIUBAH/);
+    }
+  } finally { db.close(); }
 });

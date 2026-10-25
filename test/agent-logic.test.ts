@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { distance } from "../src/market-data/active-bin.ts";
 import { fetchCandleSeries } from "../src/market-data/candles.ts";
-import { indicatorExitSignal, macdHistogram, rsiWilder } from "../src/market-data/indicators.ts";
-import type { Position } from "../src/domain/types.ts";
-import { OorExitEngine } from "../src/triggers/oor-exit.ts";
 import { formatExitTimestamp, simulateLegacyTransaction } from "../src/execution/executor.ts";
 import { Connection, Keypair, SystemProgram, Transaction } from "@solana/web3.js";
 
@@ -30,56 +26,8 @@ function legacyTransaction(): Transaction {
   return tx;
 }
 
-const position: Position = {
-  id: "position-1", pool: "pool-1", tokenMint: "token-1", quoteMint: "sol",
-  lowerBinId: 100, upperBinId: 120, firstSeenAt: 0, ignored: false, state: "OPEN",
-};
-
-test("OOR uses range boundaries, continuous confirmation, and resets below threshold", () => {
-  const engine = new OorExitEngine();
-  const below = { enabled: true, trigger_bins: 20, confirm_sec: 5 };
-  const above = { enabled: true, trigger_bins: 20, confirm_sec: 30 };
-
-  assert.deepEqual(distance(position, 80), { below: 20, above: -40 });
-  assert.equal(engine.update(position, 79, 1_000, below, above), undefined);
-  assert.equal(engine.update(position, 81, 3_000, below, above), undefined);
-  assert.equal(engine.update(position, 79, 5_000, below, above), undefined);
-  const trigger = engine.update(position, 80, 10_000, below, above);
-  assert.equal(trigger?.reason, "OOR_BELOW");
-  assert.equal(trigger?.detectedAt, 5_000);
-  assert.equal(trigger?.confirmedAt, 10_000);
-  assert.equal(trigger?.detail.belowDistance, 20);
-});
-
-test("OOR closes immediately above range when confirmation is zero and ignores ignored positions", () => {
-  const engine = new OorExitEngine();
-  const config = { enabled: true, trigger_bins: 20, confirm_sec: 0 };
-  assert.equal(engine.update({ ...position, ignored: true }, 140, 1_000, config, config), undefined);
-  assert.equal(engine.update(position, 140, 2_000, { ...config, enabled: false }, config)?.reason, "OOR_ABOVE");
-});
-
 test("exit timestamp includes weekday, date, and local hour and minute", () => {
   assert.equal(formatExitTimestamp(Date.UTC(2026, 9, 4, 0, 0), "Asia/Jakarta"), "Minggu, 4 Oktober 2026 pukul 07.00 WIB");
-});
-
-test("indicator math handles readiness, Wilder RSI, MACD warm-up, and same-candle confirmation", () => {
-  assert.equal(rsiWilder([1, 2], 2), undefined);
-  assert.equal(rsiWilder([1, 2, 3], 2), 100);
-  assert.equal(rsiWilder([5, 5, 5], 2), 50);
-  const histogram = macdHistogram(Array.from({ length: 50 }, (_, index) => 100 + index));
-  assert.ok(histogram.length > 0 && histogram.every(Number.isFinite));
-
-  const candles = [1, 2].map((close, index) => ({
-    time: index * 300_000, open: close, high: close, low: close,
-    close, volume: 1, provider: "test", unit: "usd" as const,
-  }));
-  const signal = indicatorExitSignal(candles, {
-    indicators: { rsi: { period: 1, overbought: 90 }, bb: { period: 2, std_dev: 0 } },
-    rule: { rsi_required: true, confirmations_any_of: ["bb_breakout"] },
-  });
-  assert.equal(signal.fired, true);
-  assert.equal(signal.rsi, 100);
-  assert.equal(signal.bbUpper, 1.5);
 });
 
 test("live close simulation uses the legacy-compatible call and never passes a config object", async () => {

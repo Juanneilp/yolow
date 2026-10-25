@@ -4,11 +4,11 @@ Versi 1.1 · Diperbarui 14 Oktober 2026 · Berdasarkan audit 13 Oktober 2026 · 
 
 ## 1. Ringkasan
 
-Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menutup posisi berdasarkan sinyal indikator atau kondisi out of range, lalu menukar token hasil close menjadi SOL melalui Jupiter. Proses ini memberi aplikasi akses signing yang dapat menggerakkan dana wallet.
+Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menutup posisi berdasarkan profit neto SOL atau kondisi out of range persentase, lalu menukar token hasil close menjadi SOL melalui Jupiter. Proses ini memberi aplikasi akses signing yang dapat menggerakkan dana wallet.
 
-Hasil audit menunjukkan lima masalah yang harus diperbaiki sebelum transaksi live: validasi isi instruksi Jupiter, retry swap, finalisasi hasil dry-run, pemulihan metadata transaksi, dan kesegaran candle. Perubahan mode operasi serta dependency juga memerlukan perbaikan.
+Hasil audit menunjukkan lima masalah yang harus diperbaiki sebelum transaksi live: validasi isi instruksi Jupiter, retry swap, finalisasi hasil dry-run, pemulihan metadata transaksi, dan kesegaran data harga. Perubahan mode operasi serta dependency juga memerlukan perbaikan.
 
-Fitur membuka posisi DLMM belum tersedia pada kode yang diaudit. Persyaratan untuk fitur tersebut dijelaskan sebagai prasyarat pengembangan berikutnya. Target pembaca adalah pemilik wallet dan engineer yang mengimplementasikan perbaikan.
+Pada audit awal, fitur membuka posisi DLMM belum tersedia. Rilis saat ini menambahkan entry virtual DRY-RUN, tanpa signer atau broadcast. Persyaratan untuk fitur tersebut dijelaskan sebagai prasyarat pengembangan berikutnya. Target pembaca adalah pemilik wallet dan engineer yang mengimplementasikan perbaikan.
 
 ### Status implementasi SEC 01 sampai SEC 05
 
@@ -18,7 +18,7 @@ Fitur membuka posisi DLMM belum tersedia pada kode yang diaudit. Persyaratan unt
 | SEC 02 | Retry memeriksa percobaan terbaru, transaksi belum selesai, kelengkapan catatan input, dan sisa hasil close terkonfirmasi; pencatatan swap sebelum broadcast dilakukan atomik |
 | SEC 03 | Journal simulasi dan konteksnya disimpan sebagai event `DRY_RUN_ARCHIVED` sebelum journal aktif dipromosikan ke live |
 | SEC 04 | Metadata belum tersedia menghasilkan `WAITING_METADATA`; recovery membaca hasil tanpa broadcast ulang dan mencatat hasil serta fee swap secara atomik |
-| SEC 05 | Kesegaran diperiksa saat pemilihan provider, evaluasi indikator, dan sebelum broadcast; batas umur memperhitungkan interval candle, grace provider, dan stale allowance |
+| SEC 05 | Exit baru mensyaratkan snapshot harga/quote ≤120 detik dan memeriksa ulang sebelum perubahan state; executor menolak trigger lama dan snapshot kedaluwarsa sebelum broadcast |
 
 Regression test berada di `test/execution-security.test.ts`, termasuk fixture build dari API Jupiter dengan wallet dan ATA diganti untuk menghilangkan identitas wallet operasional. Pengambilan IDL dan build bersifat baca saja. Verifikasi ini belum mencakup pengiriman transaksi mainnet maupun pengaktifan kode melalui restart PM2.
 
@@ -125,20 +125,22 @@ Akibatnya, close dapat berhasil di blockchain tetapi token hasil close tetap ber
 
 **Kriteria penerimaan:** metadata kosong kemudian tersedia menghasilkan jumlah aktual dan paling banyak satu swap yang berhasil. Restart selama penantian tetap dapat memulihkan hasil. Metadata valid dengan delta nol boleh menghasilkan `SKIPPED_NO_TOKEN`.
 
-### SEC 05 Kesegaran candle sebelum exit indikator
+### SEC 05 Kesegaran harga dan quote sebelum exit
 
-**Prioritas: High, wajib sebelum live.** Sumber: [candles.ts](src/market-data/candles.ts), fungsi `fetchProvider`; [agent.ts](src/agent.ts), evaluasi indikator.
+Snapshot harga dan quote exit baru harus bertimestamp valid, tidak di masa depan, dan berumur maksimum 120 detik. Pemeriksaan diulang setelah pekerjaan asinkron sebelum commit. Active-bin feed dengan fallback terhenti tidak boleh menghasilkan sinyal baru. Executor menolak trigger lama (`RETIRED_TRIGGER`) dan harga kedaluwarsa (`STALE_PRICE`) sebelum broadcast. Candle historis tetap dapat dibaca untuk jurnal, tanpa memicu exit indikator.
 
-Provider saat ini memeriksa bahwa candle sudah selesai, tetapi belum memastikan candle terbaru cukup segar. Reproduksi lokal menunjukkan respons dengan candle berumur lebih dari 24 jam diterima sebagai seri sukses. Posisi lama yang memenuhi syarat umur dapat dievaluasi menggunakan data tersebut.
+**Kriteria penerimaan:** harga/quote kedaluwarsa tidak menghasilkan entry, close atau kredit swap; retry setelah restart melanjutkan hasil close sekali saja. Sinyal yang kedaluwarsa dalam antrean/simulasi ditolak sebelum broadcast.
 
-**Persyaratan:**
+### Pengaman otomatisasi DRY-RUN
 
-- Periksa kesegaran berdasarkan waktu akhir candle terbaru terhadap waktu saat ini. Umur maksimum adalah durasi timeframe dalam detik + `candles.grace_window_sec` + `candles.stale_data_pause_sec`, sehingga candle tetap berlaku sampai interval berikutnya beserta toleransi provider.
-- Tolak seri kedaluwarsa dan coba provider berikutnya; respons HTTP sukses tidak boleh dianggap sebagai pemulihan data ketika candle masih lama.
-- Periksa kembali kesegaran sebelum mengeksekusi sinyal indikator yang melewati antrean atau proses panjang.
-- Jika semua provider kedaluwarsa, jeda exit indikator dan kirim status yang jelas; pemantauan OOR tetap mengikuti pengaman data active bin yang ada.
-
-**Kriteria penerimaan:** candle selesai tetapi kedaluwarsa ditolak, fallback yang segar dapat digunakan, dan semua provider kedaluwarsa tidak menghasilkan close indikator. Sinyal yang menjadi kedaluwarsa sebelum eksekusi juga ditolak.
+- Entry dan exit otomatis hanya mengubah tabel paper/ledger; tidak mengimpor atau memanggil jalur signing/broadcast.
+- Aktivasi membutuhkan config dan mode SQLite DRY-RUN; `/golive` beserta callback ditolak selama otomatisasi aktif.
+- Maksimum 15 termasuk posisi manual/ignored dan reservasi; ulangi discovery sebelum commit entry. Mint/pool aktif tidak boleh ganda.
+- Tolak biaya pembukaan non-refundable yang tidak nol atau tidak diketahui, termasuk bin array, bitmap, composition fee dan ekstensi token yang tidak didukung.
+- Batas swap minimum $0,20 berlaku pada semua swap. Dust tidak membayar gas swap dan tidak dihitung SOL.
+- **Pengecualian yang diotorisasi pengguna:** setelah loss OOR bawah, sweep seluruh saldo wallet untuk mint tersebut, termasuk saldo lama. Ledger/jurnal memisahkan hasil saldo lama dari profit LP. Pengaman lama yang membatasi swap hasil close tetap berlaku pada executor LIVE; sweep ini hanya simulasi.
+- Blokir mint loss sampai manual unblock. Swap gagal tetap CLOSING; blokir tidak dapat dibuka saat sweep belum selesai. Reservation tanpa debit dibersihkan saat startup; OPEN/CLOSING/ledger tetap persisten.
+- ID paper terpisah dari posisi nyata. Simulasi close tidak menandai posisi nyata CLOSED dan tidak membebaskan slot nyata.
 
 ### SEC 06 Kembali ke dry-run melalui Telegram
 

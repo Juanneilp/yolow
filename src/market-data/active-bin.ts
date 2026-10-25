@@ -1,8 +1,6 @@
 import DLMM from "../meteora.ts";
 import { PublicKey, type Connection } from "@solana/web3.js";
-import type { Position } from "../domain/types.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { OorExitEngine } from "../triggers/oor-exit.ts";
 import { listPositions } from "../positions/monitor.ts";
 import { safeError } from "../security.ts";
 
@@ -10,15 +8,8 @@ type Options = {
   connection: Connection;
   db: DatabaseSync;
   fallbackPollMs: number;
-  below: { enabled: boolean; trigger_bins: number; confirm_sec: number };
-  above: { enabled: boolean; trigger_bins: number; confirm_sec: number };
-  poolOverrides: Record<string, {
-    oor_exit?: {
-      below?: Partial<{ enabled: boolean; trigger_bins: number; confirm_sec: number }>;
-      above?: Partial<{ enabled: boolean; trigger_bins: number; confirm_sec: number }>;
-    };
-  }>;
-  onTrigger: (trigger: { positionId: string; pool: string; reason: "OOR_BELOW" | "OOR_ABOVE"; detectedAt: number; confirmedAt: number; detail: Record<string, unknown> }) => Promise<number>;
+  extraPools?: () => string[];
+
 };
 
 type ActivePool = {
@@ -33,7 +24,6 @@ type ActivePool = {
 
 export class ActiveBinMonitor {
   private readonly pools = new Map<string, ActivePool>();
-  private readonly engine = new OorExitEngine();
   private timer?: NodeJS.Timeout;
   private closed = false;
   private ticking = false;
@@ -47,7 +37,7 @@ export class ActiveBinMonitor {
 
   async refreshPools(): Promise<void> {
     const positions = listPositions(this.options.db);
-    const activePools = new Set(positions.map((position) => position.pool));
+    const activePools = new Set([...positions.map((position) => position.pool), ...(this.options.extraPools?.() ?? [])]);
     for (const [address, state] of this.pools) {
       if (activePools.has(address)) continue;
       if (state.subscription !== undefined) await this.options.connection.removeAccountChangeListener(state.subscription).catch(() => undefined);
@@ -56,6 +46,7 @@ export class ActiveBinMonitor {
     for (const address of activePools) {
       const existing = this.pools.get(address);
       if (existing) {
+        if (Date.now() - existing.lastUpdate > this.options.fallbackPollMs * 2) continue;
         await this.updateStoredBins(address, existing.activeBin);
         existing.storedBin = existing.activeBin;
         existing.storedAt = Date.now();
@@ -89,6 +80,13 @@ export class ActiveBinMonitor {
     }
   }
 
+  latest(pool: string): { active: number; step: number; solIsX: boolean; at: number } | undefined {
+    const state = this.pools.get(pool);
+    if (!state || Date.now() - state.lastUpdate > this.options.fallbackPollMs * 2) return undefined;
+    return { active: state.activeBin, step: state.client.lbPair.binStep,
+      solIsX: state.client.tokenX.mint.address.toBase58() === "So11111111111111111111111111111111111111112", at: state.lastUpdate };
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
@@ -104,8 +102,6 @@ export class ActiveBinMonitor {
     this.ticking = true;
     try {
       let now = Date.now();
-      const positions = listPositions(this.options.db);
-      this.engine.retain(new Set(positions.map((position) => position.id)));
       for (const [address, state] of this.pools) {
         const wsConnected = (this.options.connection as unknown as { _rpcWebSocketConnected?: boolean })._rpcWebSocketConnected;
         const feedStale = now - state.lastUpdate >= this.options.fallbackPollMs;
@@ -127,7 +123,6 @@ export class ActiveBinMonitor {
         }
         now = Date.now();
         if (needsFallback && now - state.lastUpdate > this.options.fallbackPollMs * 2) {
-          for (const position of positions.filter((item) => item.pool === address)) this.engine.reset(position.id);
           continue;
         }
         if (state.activeBin !== state.storedBin || now - state.storedAt >= 60_000) {
@@ -135,16 +130,7 @@ export class ActiveBinMonitor {
           state.storedBin = state.activeBin;
           state.storedAt = now;
         }
-        for (const position of positions.filter((item) => item.pool === address)) {
-          const overrides = this.options.poolOverrides[address]?.oor_exit;
-          const below = { ...this.options.below, ...overrides?.below };
-          const above = { ...this.options.above, ...overrides?.above };
-          const trigger = this.engine.update(position, state.activeBin, now, below, above);
-          if (trigger) {
-            const retryAfterMs = await this.options.onTrigger(trigger);
-            if (retryAfterMs > 0) this.engine.retry(position.id, Date.now() + retryAfterMs);
-          }
-        }
+
       }
     } finally { this.ticking = false; }
   }
@@ -153,10 +139,6 @@ export class ActiveBinMonitor {
     this.options.db.prepare("UPDATE positions SET active_bin=?,last_checked=? WHERE pool=? AND state='OPEN'")
       .run(activeBin, Date.now(), pool);
   }
-}
-
-export function distance(position: Position, activeBin: number): { below: number; above: number } {
-  return { below: position.lowerBinId - activeBin, above: activeBin - position.upperBinId };
 }
 
 function decodeActiveBin(client: DLMM, data: Buffer): number {

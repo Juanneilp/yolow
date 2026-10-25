@@ -1,11 +1,11 @@
+import { PaperAutomation } from "./automation/automation.ts";
+import { AutomationMarket } from "./automation/market.ts";
 import DLMM from "./meteora.ts";
 import { PublicKey, type Connection } from "@solana/web3.js";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfig } from "./config/config.ts";
-import type { Candle, Timeframe, Trigger } from "./domain/types.ts";
-import { assertFreshCandle, fetchCandleAt, fetchCandleSeries, loadCandles, saveCandles } from "./market-data/candles.ts";
-import { indicatorExitSignal } from "./market-data/indicators.ts";
+import { fetchCandleAt } from "./market-data/candles.ts";
 import { readJsonResponse, safeError, telegramApiBase } from "./security.ts";
 import { ActiveBinMonitor } from "./market-data/active-bin.ts";
 import { listPositions } from "./positions/monitor.ts";
@@ -15,9 +15,8 @@ import { getMeta, setMeta } from "./storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { persistTradeCsv } from "./journal/export.ts";
 import { fetchTokenInfo, tokenLabel } from "./market-data/token-info.ts";
-import { binStepLabel, notificationCard, triggerReasonLabel } from "./telegram/presentation.ts";
+import { binStepLabel, notificationCard } from "./telegram/presentation.ts";
 
-const timeframeMs: Record<Timeframe, number> = { "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000 };
 type Options = {
   connection: Connection;
   wallet: PublicKey;
@@ -32,13 +31,12 @@ type Options = {
 export class YolowAgent {
   readonly executor: CloseExecutor;
   readonly pnl: PositionPnlMonitor;
+  readonly automation: PaperAutomation;
   private readonly activeBins: ActiveBinMonitor;
   private discoveryBusy = false;
-  private candleBusy = false;
   private stopped = false;
   private timers: NodeJS.Timeout[] = [];
   private readonly backgroundTasks = new Map<string, Promise<void>>();
-  private readonly lastCandleSuccessByPool = new Map<string, number>();
   private lastProfitAlertCheckAt?: number;
 
   constructor(private readonly options: Options) {
@@ -51,11 +49,11 @@ export class YolowAgent {
     this.activeBins = new ActiveBinMonitor({
       connection: options.connection, db: options.db,
       fallbackPollMs: options.config.rpc.oor_fallback_poll_interval_sec * 1000,
-      below: options.config.oor_exit.below, above: options.config.oor_exit.above,
-      poolOverrides: options.config.pool_overrides,
-      onTrigger: (trigger) => this.onTrigger(trigger),
+      extraPools: () => this.automation?.list().filter((item) => item.origin === "virtual" && item.state === "OPEN").map((item) => item.pool) ?? [],
     });
-    if (!getMeta(options.db, "active_timeframe")) setMeta(options.db, "active_timeframe", options.config.indicator_exit.timeframe);
+    this.automation = new PaperAutomation({ db: options.db, config: options.config, pnl: this.pnl,
+      market: new AutomationMarket(options.connection, options.wallet, options.config, options.jupiterApiKey),
+      apiKey: options.jupiterApiKey, discover: () => this.discoverForEntry(), price: (pool) => this.activeBins.latest(pool), notify: this.notify });
     if (!getMeta(options.db, "dry_run")) setMeta(options.db, "dry_run", options.config.mode.dry_run ? "true" : "false");
   }
 
@@ -65,8 +63,6 @@ export class YolowAgent {
     await this.runBackgroundTask("active-bin startup", () => this.activeBins.start());
     if (this.stopped) return;
     await this.runBackgroundTask("position PnL", () => this.refreshPnl());
-    if (this.stopped) return;
-    await this.runBackgroundTask("candle refresh", () => this.refreshCandles());
     if (this.stopped) return;
     await this.runBackgroundTask("position snapshots", () => this.takeSnapshots());
     if (this.stopped) return;
@@ -91,26 +87,24 @@ export class YolowAgent {
     if (this.stopped) return;
     this.timers.push(setInterval(() => void this.runBackgroundTask("position discovery", () => this.discover()), this.options.config.mode.position_poll_interval_sec * 1000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("position PnL", () => this.refreshPnl()), 60_000));
-    this.timers.push(setInterval(() => void this.runBackgroundTask("candle refresh", () => this.refreshCandles()), this.options.config.candles.poll_interval_sec * 1000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("position snapshots", () => this.takeSnapshots()), this.options.config.history.snapshot_interval_sec * 1000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("data retention", () => this.cleanRetainedData()), 60 * 60 * 1000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("SOL balance check", () => this.checkLowSolBalance()), 60_000));
     this.timers.push(setInterval(() => void this.runBackgroundTask("post-exit marks", () => this.updatePostExitMarks()), 60_000));
     if (this.options.config.history.backup.enabled) this.scheduleWib("daily backup", this.options.config.history.backup.at_time, () => this.backup());
     if (this.options.config.notify.heartbeat.enabled) this.scheduleWib("daily heartbeat", this.options.config.notify.heartbeat.at_time, () => this.heartbeat());
+    this.timers.push(setInterval(() => void this.runBackgroundTask("automation", async () => { await this.automation.tick(); if (!this.stopped) await this.activeBins.refreshPools(); }), 15_000));
+    void this.runBackgroundTask("automation", async () => { await this.automation.tick(); if (!this.stopped) await this.activeBins.refreshPools(); });
     console.log(`Yolow agent started in ${this.executor.isDryRun() ? "DRY-RUN" : "LIVE"} mode for ${this.options.wallet.toBase58()}`);
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.automation.stop();
     for (const timer of this.timers) clearInterval(timer);
     await Promise.allSettled([...this.backgroundTasks.values()]);
     await this.activeBins.close();
     this.options.db.close();
-  }
-
-  getTimeframe(): Timeframe {
-    return (getMeta(this.options.db, "active_timeframe") ?? this.options.config.indicator_exit.timeframe) as Timeframe;
   }
 
   private runBackgroundTask(name: string, operation: () => Promise<void>): Promise<void> {
@@ -122,11 +116,6 @@ export class YolowAgent {
       .finally(() => { if (this.backgroundTasks.get(name) === task) this.backgroundTasks.delete(name); });
     this.backgroundTasks.set(name, task);
     return task;
-  }
-
-  async setTimeframe(timeframe: Timeframe): Promise<void> {
-    setMeta(this.options.db, "active_timeframe", timeframe);
-    await this.refreshCandles();
   }
 
   private async refreshPnl(): Promise<void> {
@@ -180,10 +169,6 @@ export class YolowAgent {
     }
   }
 
-  private timeframeForPool(pool: string): Timeframe {
-    return this.options.config.pool_overrides[pool]?.indicator_exit?.timeframe ?? this.getTimeframe();
-  }
-
   private readonly notify = async (message: string): Promise<void> => {
     const endpoint = `${telegramApiBase(this.options.telegramToken)}/sendMessage`;
     try {
@@ -196,6 +181,12 @@ export class YolowAgent {
       if (!result.ok) throw new Error(`Telegram notification failed: ${result.description ?? "unknown"}`);
     } catch (error) { console.warn("Telegram notification failed:", safeError(error)); }
   };
+
+  private async discoverForEntry(): Promise<boolean> {
+    if (this.discoveryBusy || this.stopped) return false;
+    await this.discover();
+    return getMeta(this.options.db, "position_discovery_failed") !== "true";
+  }
 
   private async discover(): Promise<void> {
     if (this.discoveryBusy || this.stopped) return;
@@ -261,99 +252,6 @@ export class YolowAgent {
         ])).catch(() => undefined);
       }
     } finally { this.discoveryBusy = false; }
-  }
-
-  private async refreshCandles(): Promise<void> {
-    if (this.candleBusy || this.stopped || !this.options.config.indicator_exit.enabled) return;
-    this.candleBusy = true;
-    try {
-      const positions = listPositions(this.options.db);
-      const series = new Map<Timeframe, Set<string>>();
-      for (const position of positions) {
-        const timeframe = this.timeframeForPool(position.pool);
-        const pools = series.get(timeframe) ?? new Set<string>();
-        pools.add(position.pool);
-        series.set(timeframe, pools);
-      }
-      for (const [timeframe, pools] of series) for (const pool of pools) {
-        try {
-          const candles = await fetchCandleSeries(pool, timeframe, this.options.config);
-          saveCandles(this.options.db, candles, pool, timeframe);
-          this.lastCandleSuccessByPool.set(`${pool}:${timeframe}`, Date.now());
-          const staleKey = `stale_candles:${pool}:${timeframe}`;
-          if (getMeta(this.options.db, staleKey) === "true") {
-            setMeta(this.options.db, staleKey, "false");
-            await this.notify(notificationCard("✅ DATA CANDLE PULIH", [
-              `Pool ${pool}`,
-              "Evaluasi sinyal indikator dilanjutkan. Pemantauan OOR tetap berjalan.",
-              `🕒 ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
-            ]));
-          }
-          await this.evaluateSeries(pool, timeframe, candles);
-        } catch (error) {
-          const now = Date.now();
-          const seriesKey = `${pool}:${timeframe}`;
-          const lastSuccess = this.lastCandleSuccessByPool.get(seriesKey) ?? now;
-          this.lastCandleSuccessByPool.set(seriesKey, lastSuccess);
-          const staleKey = `stale_candles:${pool}:${timeframe}`;
-          if (now - lastSuccess >= this.options.config.candles.stale_data_pause_sec * 1000 && getMeta(this.options.db, staleKey) !== "true") {
-            setMeta(this.options.db, staleKey, "true");
-            await this.notify(notificationCard("⚠️ DATA CANDLE TERHENTI", [
-              `Pool ${pool}`,
-              `Semua sumber candle gagal selama lebih dari ${this.options.config.candles.stale_data_pause_sec} detik. Sinyal indikator dijeda; pemantauan OOR tetap berjalan.`,
-              `Detail: ${safeError(error)}`,
-              "Periksa koneksi sumber data melalui /config.",
-              `🕒 ${wibStamp(now, this.options.config.timezone)} WIB`,
-            ]));
-          }
-          console.warn(`Candle fetch failed for ${pool}:`, safeError(error));
-        }
-      }
-    } finally { this.candleBusy = false; }
-  }
-
-  private async evaluateSeries(pool: string, timeframe: Timeframe, fetched: Candle[]): Promise<void> {
-    const unit = fetched.at(-1)?.unit ?? this.options.config.candles.price_unit;
-    const candles = loadCandles(this.options.db, pool, timeframe, unit, fetched.at(-1)?.provider ?? "", this.options.config.candles.backfill_candles);
-    if (candles.length < 35) return;
-    const candle = candles.at(-1)!;
-    assertFreshCandle(candle.time, timeframe, this.options.config.candles);
-    const key = `${pool}:${timeframe}:${unit}:${candle.provider}`;
-    const signal = indicatorExitSignal(candles, this.options.config.indicator_exit);
-    const inserted = this.options.db.prepare(`INSERT OR IGNORE INTO signals
-      (series_key,asset_key,provider,timeframe,unit,candle_time,rule_fired,rsi,bb_upper,close,macd_hist,evaluated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(key, pool, candle.provider, timeframe, unit, candle.time, signal.fired ? 1 : 0,
-      signal.rsi ?? null, signal.bbUpper ?? null, candle.close, signal.macdHist ?? null, Date.now());
-    if (inserted.changes === 0 || !signal.fired) return;
-    await this.notify(notificationCard("📈 SINYAL INDIKATOR TERKONFIRMASI", [
-      `Pool ${pool}`,
-      `Timeframe ${timeframe} · harga penutupan ${candle.close} ${unit.toUpperCase()}`,
-      `RSI ${signal.rsi?.toFixed(2)} · BB atas ${signal.bbUpper?.toPrecision(6)} · MACD ${signal.macdHist?.toPrecision(6)}`,
-      `🕒 Candle ${wibStamp(candle.time, this.options.config.timezone)} WIB`,
-    ]));
-    for (const position of listPositions(this.options.db).filter((item) => item.pool === pool)) {
-      const detail = { ...signal, close: candle.close, candleTime: candle.time, provider: candle.provider, unit, timeframe };
-      const trigger: Trigger = { positionId: position.id, pool, reason: "INDICATOR", detectedAt: Date.now(), confirmedAt: Date.now(), detail };
-      if (position.ignored) {
-        this.options.db.prepare(`INSERT INTO triggers(position_id,pool,reason,detected_at,confirmed_at,detail,outcome,series_key,candle_time)
-          VALUES(?,?,?,?,?,?,'IGNORED',?,?)`).run(position.id, pool, "INDICATOR", trigger.detectedAt, trigger.confirmedAt, JSON.stringify(detail), key, candle.time);
-      } else if (candle.time + timeframeMs[timeframe] < position.firstSeenAt + this.options.config.indicator_exit.min_age_candles * timeframeMs[timeframe]) {
-        this.options.db.prepare(`INSERT INTO triggers(position_id,pool,reason,detected_at,confirmed_at,detail,outcome,series_key,candle_time)
-          VALUES(?,?,?,?,?,?,'NOT_ELIGIBLE',?,?)`).run(position.id, pool, "INDICATOR", trigger.detectedAt, trigger.confirmedAt, JSON.stringify(detail), key, candle.time);
-      } else await this.executor.execute(trigger);
-    }
-  }
-
-  private async onTrigger(trigger: Trigger): Promise<number> {
-    await this.notify(notificationCard("⚠️ SINYAL EXIT DIKONFIRMASI", [
-      `Posisi ${trigger.positionId}`,
-      `Pool ${trigger.pool}`,
-      `Alasan ${triggerReasonLabel(trigger.reason)}`,
-      `Bin aktif ${trigger.detail.activeBin} · jarak ${trigger.reason === "OOR_BELOW" ? trigger.detail.belowDistance : trigger.detail.aboveDistance} bin`,
-      `Konfirmasi ${(Number(trigger.detail.confirmMs) / 1000).toFixed(1)} detik`,
-      `🕒 ${wibStamp(trigger.confirmedAt, this.options.config.timezone)} WIB`,
-    ]));
-    return this.executor.execute(trigger);
   }
 
   private async takeSnapshots(): Promise<void> {

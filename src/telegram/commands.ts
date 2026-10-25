@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { Connection, PublicKey } from "@solana/web3.js";
-import { timeframes, type AppConfig } from "../config/config.ts";
+import { type AppConfig } from "../config/config.ts";
 import { applyConfigInPlace, editablePaths, prepareConfigUpdate, writeConfigAtomically } from "../config/config-store.ts";
 import { loadSigner, setLiveMode } from "../execution/executor.ts";
 import { listPositions, setPositionIgnored } from "../positions/monitor.ts";
@@ -33,43 +33,31 @@ const short = (value: string) => `${value.slice(0, 5)}…${value.slice(-5)}`;
 const positionLabel = (value: string) => `${value.slice(0, 8)}…${value.slice(-5)}`;
 const configPathDefault = "./config.json";
 const configMenuMarkup = { inline_keyboard: [
-  [{ text: "🎯 Strategi exit", callback_data: "config:section:strategy" }, { text: "📉 OOR", callback_data: "config:section:oor" }],
-  [{ text: "🔥 Top Trending", callback_data: "config:section:trending" }, { text: "⚡ Eksekusi & swap", callback_data: "config:section:execution" }],
-  [{ text: "🕯 Data candle", callback_data: "config:section:data" }, { text: "🔔 Notifikasi & riwayat", callback_data: "config:section:records" }],
+  [{ text: "🤖 Otomatisasi", callback_data: "config:section:automation" }, { text: "🔴 Live mode", callback_data: "cmd:/golive" }],
+  [{ text: "⚡ Eksekusi & swap", callback_data: "config:section:execution" }],
+  [{ text: "🕯 Harga historis", callback_data: "config:section:data" }, { text: "🔔 Notifikasi & riwayat", callback_data: "config:section:records" }],
   [{ text: "🧪 Top Careless Strat", callback_data: "config:section:careless" }, { text: "🖥 Sistem", callback_data: "config:section:system" }],
 ] };
 const configSections: Record<string, { title: string; paths: string[] }> = {
   careless: { title: "TOP CARELESS STRAT", paths: [
     "top_careless.enabled", "top_careless.limit", "top_careless.min_market_cap_usd", "top_careless.min_token_age_days", "top_careless.min_tvl_usd",
   ] },
-  strategy: { title: "STRATEGI EXIT", paths: [
-    "indicator_exit.enabled", "indicator_exit.timeframe", "indicator_exit.min_age_candles",
-    "indicator_exit.indicators.rsi.period", "indicator_exit.indicators.rsi.overbought",
-    "indicator_exit.indicators.bb.period", "indicator_exit.indicators.bb.std_dev",
-    "indicator_exit.indicators.macd.fast", "indicator_exit.indicators.macd.slow", "indicator_exit.indicators.macd.signal",
-    "indicator_exit.rule.rsi_required", "indicator_exit.rule.confirmations_any_of",
-  ] },
-  oor: { title: "EXIT OUT-OF-RANGE", paths: [
-    "oor_exit.below.enabled", "oor_exit.below.trigger_bins", "oor_exit.below.confirm_sec",
-    "oor_exit.above.enabled", "oor_exit.above.trigger_bins", "oor_exit.above.confirm_sec",
-  ] },
-  trending: { title: "TOP TRENDING", paths: [
-    "top_trending.enabled", "top_trending.limit", "top_trending.min_market_cap_usd",
-    "top_trending.min_token_age_hours", "top_trending.max_token_age_days", "top_trending.min_holders",
-    "top_trending.min_tvl_usd", "top_trending.min_organic_score", "top_trending.volume_window",
+  automation: { title: "OTOMATISASI DRY-RUN", paths: [
+    "automation.enabled", "automation.max_positions", "automation.position_sol", "automation.min_bin_step",
+    "automation.min_price_percent", "automation.profit_percent", "automation.oor_above_percent", "automation.oor_below_percent",
   ] },
   execution: { title: "EKSEKUSI & SWAP", paths: [
     "execution.max_retries", "execution.priority_fee.microlamports", "execution.priority_fee.max_cap_microlamports",
     "swap.enabled", "swap.min_value_usd", "swap.slippage_bps", "swap.max_slippage_bps", "swap.max_retries",
   ] },
-  data: { title: "DATA CANDLE", paths: [
-    "candles.primary", "candles.fallback_chain", "candles.price_unit", "candles.poll_interval_sec",
+  data: { title: "HARGA HISTORIS", paths: [
+    "candles.primary", "candles.fallback_chain", "candles.price_unit",
     "candles.grace_window_sec", "candles.backfill_candles", "candles.stale_data_pause_sec",
   ] },
   records: { title: "NOTIFIKASI & RIWAYAT", paths: [
     "notify.profit_alert.enabled", "notify.profit_alert.interval_minutes", "notify.profit_alert.threshold_percent",
     "notify.low_sol_balance_alert_sol", "notify.heartbeat.enabled", "notify.heartbeat.at_time",
-    "history.snapshot_interval_sec", "history.snapshot_retention_days", "history.context_candles",
+    "history.snapshot_interval_sec", "history.snapshot_retention_days",
     "history.csv_export.enabled", "history.backup.enabled", "history.backup.at_time", "history.backup.keep",
   ] },
   system: { title: "SISTEM", paths: [
@@ -123,8 +111,6 @@ function findTrade(db: DatabaseSync, key: string): Record<string, any> | undefin
 function noTrade(key: string): never { throw new Error(`Trade '${key}' tidak ditemukan.`); }
 
 const configParameterPresets: Record<string, string[]> = {
-  "indicator_exit.timeframe": ["5m", "15m", "30m", "1h"],
-  "top_trending.volume_window": ["4h", "12h", "24h"],
   "candles.price_unit": ["usd", "sol"],
   "candles.primary": ["gmgn", "meteora", "geckoterminal", "onchain_ticks"],
 };
@@ -141,23 +127,15 @@ export function createCommandHandler(options: Options) {
   const applyValidatedConfigUpdate = async (path: string, rawValue: string): Promise<Reply> => {
     try {
       const update = prepareConfigUpdate(config, path, rawValue);
-      if ((update.config.swap.enabled || update.config.top_trending.enabled || update.config.top_careless.enabled) && !jupiterApiKey) {
-        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap, Top Trending, atau Top Careless Strat.");
+      if ((update.config.swap.enabled || update.config.top_careless.enabled || update.config.automation.enabled) && !jupiterApiKey) {
+        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau Top Careless Strat.");
       }
+      if (update.config.automation.enabled && !agent.executor.isDryRun()) throw new Error("Otomatisasi hanya tersedia dalam DRY-RUN");
       await writeConfigAtomically(configPath, `${JSON.stringify(update.config, null, 2)}\n`);
       applyConfigInPlace(config, update.config);
       db.prepare(`INSERT INTO config_changes(changed_at,path,old_value,new_value) VALUES(?,?,?,?)`)
         .run(Date.now(), path, auditValue(path, update.oldValue), auditValue(path, update.newValue));
-      let refreshNote = "";
-      if (path === "indicator_exit.timeframe") {
-        try { await agent.setTimeframe(update.config.indicator_exit.timeframe); }
-        catch (error) {
-          const reason = safeError(error);
-          console.warn("Config saved but timeframe refresh failed:", reason);
-          refreshNote = `\nRefresh candle perlu dicoba ulang: ${reason}`;
-        }
-      }
-      return { text: `✅ CONFIG DISIMPAN\n${path}\nSebelum: ${configDisplayValue(path, update.oldValue)}\nSekarang: ${configDisplayValue(path, update.newValue)}\n${update.restartRequired ? "Perubahan aktif setelah PM2 restart yolow." : "Perubahan aktif sekarang."}${refreshNote}`, replyMarkup: configMenuMarkup };
+      return { text: `✅ CONFIG DISIMPAN\n${path}\nSebelum: ${configDisplayValue(path, update.oldValue)}\nSekarang: ${configDisplayValue(path, update.newValue)}\n${update.restartRequired ? "Perubahan aktif setelah PM2 restart yolow." : "Perubahan aktif sekarang."}`, replyMarkup: configMenuMarkup };
     } catch (error) {
       return { text: `❌ CONFIG TIDAK DIUBAH\n${safeError(error)}`, replyMarkup: configMenuMarkup };
     }
@@ -207,7 +185,12 @@ export function createCommandHandler(options: Options) {
   };
 
   const positionsReply = async (requestedPage = 0, force = false, positionId?: string): Promise<Reply> => {
-    const positions = listPositions(db);
+    const realPositions = listPositions(db);
+    const paper = agent.automation?.list().filter((item) => item.origin === "virtual" && item.state !== "RESERVED") ?? [];
+    const positions = [...realPositions.map((item) => ({ ...item, virtual: false, paperClosed: agent.automation?.manualState(item.id)?.state === "CLOSED", paperPending: agent.automation?.manualState(item.id)?.state === "CLOSING" })),
+      ...paper.map((item) => ({ id: item.id, pool: item.pool, tokenMint: item.mint, quoteMint: "So11111111111111111111111111111111111111112",
+        lowerBinId: item.lower_bin, upperBinId: item.upper_bin, binStep: item.bin_step, baseFeePercent: undefined,
+        firstSeenAt: item.opened_at, state: "OPEN" as const, ignored: Boolean(item.ignored), activeBin: undefined, virtual: true, paperClosed: false, paperPending: item.state === "CLOSING" }))];
     const back = { text: "⬅️ Kembali ke daftar", callback_data: "positions:page:0" };
     if (positionId && !positions.some((position) => position.id === positionId)) {
       return { text: "Posisi tidak lagi terbuka.", replyMarkup: { inline_keyboard: [[back]] } };
@@ -218,12 +201,16 @@ export function createCommandHandler(options: Options) {
     };
     // Keep every open pool in the refresh set: the monitor prunes caches for omitted pools.
     const [results, tokens] = await Promise.all([
-      agent.pnl.refresh(positions.map((position) => position.pool), force),
+      agent.pnl.refresh(realPositions.map((position) => position.pool), force),
       fetchTokenInfo(positions.map((position) => position.tokenMint), jupiterApiKey, config.jupiter.tokens_base_url),
     ]);
     const items = positions.map((position) => {
-      const result = results.get(position.pool);
-      const data = result?.positions.get(position.id);
+      const virtual = paper.find((item) => item.id === position.id);
+      const result = virtual ? { fetchedAt: virtual.last_at ?? undefined, positions: new Map(), error: virtual.error ?? undefined } : results.get(position.pool);
+      const data = virtual ? { id: virtual.id, deposits: virtual.principal === null ? null : Number(virtual.principal) / 1e9,
+        withdrawals: 0, claimed: 0, pnl: virtual.profit === null ? null : Number(virtual.profit) / 1e9,
+        percent: virtual.profit === null || virtual.principal === null || Number(virtual.principal) === 0 ? null : Number(virtual.profit) / Number(virtual.principal) * 100,
+        updatedAt: virtual.last_at } : result?.positions.get(position.id);
       const token = tokens.get(position.tokenMint);
       const quote = position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint);
       const pair = `${token?.symbol ?? token?.name ?? short(position.tokenMint)}/${quote}`;
@@ -248,7 +235,7 @@ export function createCommandHandler(options: Options) {
       return {
         text: [
           `📍 <b>DETAIL POSISI · ${escapeHtml(pair)}</b>`, pnlLine(data),
-          position.ignored ? "⏸ <b>SINYAL EXIT DIABAIKAN</b>" : "✅ <b>EXIT AKTIF · DIPANTAU</b>",
+          position.ignored ? "⏸ <b>SINYAL EXIT DIABAIKAN</b>" : position.paperPending ? "🟡 <b>CLOSE SIMULASI · SWAP MENUNGGU</b>" : position.paperClosed ? "🟡 <b>CLOSE SUDAH DISIMULASIKAN · POSISI NYATA MASIH TERBUKA</b>" : config.automation.enabled ? "✅ <b>EXIT AKTIF · DIPANTAU</b>" : "⏸ <b>OTOMATISASI NONAKTIF</b>",
           ...(warning ? [warning] : []), "",
           `Deposit <b>${value(data?.deposits)}</b>`, `Penarikan ${value(data?.withdrawals)}`,
           `Fee/reward diklaim ${value(data?.claimed)}`, "",
@@ -277,10 +264,11 @@ export function createCommandHandler(options: Options) {
     const priced = items.filter((item) => item.data?.pnl != null);
     const total = priced.reduce((sum, item) => sum + item.data!.pnl!, 0);
     const ignored = positions.filter((position) => position.ignored).length;
+    const active = config.automation.enabled ? positions.filter((position) => !position.ignored && !position.paperClosed && !position.paperPending).length : 0;
     const blocks = shown.map(({ position, result, data, pair, warning }, index) => [
-      `${page * 5 + index + 1}. <b>${escapeHtml(pair)}</b> · <code>${escapeHtml(short(position.id))}</code>`,
+      `${page * 5 + index + 1}. <b>${escapeHtml(pair)}</b>${position.virtual ? " · 🟡 VIRTUAL" : ""} · <code>${escapeHtml(short(position.id))}</code>`,
       pnlLine(data),
-      `🧭 ${position.activeBin != null && position.activeBin >= position.lowerBinId && position.activeBin <= position.upperBinId ? "Dalam range" : escapeHtml(positionRangeStatus(position.activeBin, position.lowerBinId, position.upperBinId, position.binStep))} · ${position.ignored ? "⏸ Exit diabaikan" : "✅ Exit aktif"}`,
+      `🧭 ${position.activeBin != null && position.activeBin >= position.lowerBinId && position.activeBin <= position.upperBinId ? "Dalam range" : escapeHtml(positionRangeStatus(position.activeBin, position.lowerBinId, position.upperBinId, position.binStep))} · ${position.ignored ? "⏸ Exit diabaikan" : position.paperPending ? "🟡 Close simulasi · swap menunggu" : position.paperClosed ? "🟡 Close sudah disimulasikan" : config.automation.enabled ? "✅ Exit aktif" : "⏸ Otomatisasi nonaktif"}`,
       `🕒 Diambil: ${result?.fetchedAt == null ? "Belum tersedia" : wib(result.fetchedAt)}`,
       ...(warning ? [warning] : []),
     ].join("\n"));
@@ -290,14 +278,15 @@ export function createCommandHandler(options: Options) {
     return {
       text: [
         `📍 <b>POSISI &amp; PnL</b> · ${positions.length} posisi`,
+        `Nyata ${realPositions.length} · virtual ${paper.length} (simulasi)`,
         `PnL terhitung ${priced.length}/${positions.length} · <b>${priced.length && Number.isFinite(total) ? escapeHtml(signed(total, 8) + " SOL") : "Belum tersedia"}</b>`,
-        `Exit aktif ${positions.length - ignored} · Diabaikan ${ignored}`,
+        `Exit aktif ${active} · Diabaikan ${ignored}`,
         `Halaman ${page + 1}/${pages} · PnL SOL terbesar`, "", blocks.join("\n\n──────────────\n\n"), "",
-        "Pilih Detail untuk melihat data lengkap dan mengatur exit.", footer,
+        "Pilih Detail untuk melihat data lengkap dan mengatur exit.", footer, ...(paper.length ? ["Virtual: estimasi profit neto model SPOT, tanpa dampak pasar."] : []),
       ].join("\n"),
       parseMode: "HTML",
       replyMarkup: { inline_keyboard: [
-        ...shown.map((item, index) => [{ text: `${page * 5 + index + 1} · Detail ${item.pair}`, callback_data: `position:view:${item.position.id}` }]),
+        ...shown.map((item, index) => [{ text: `${page * 5 + index + 1} · Detail ${item.pair}`, callback_data: `${item.position.virtual ? "auto:position" : "position:view"}:${item.position.id}` }]),
         ...(navigation.length ? [navigation] : []),
         [{ text: "🔄 Refresh", callback_data: `positions:refresh:${page}` }],
       ] },
@@ -317,7 +306,11 @@ export function createCommandHandler(options: Options) {
           const result = await fetchTopCareless(config.top_careless, jupiterApiKey,
             config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag", config.jupiter.tokens_base_url);
           return { text: formatTopCareless(result, config.top_careless, config.timezone), parseMode: "HTML", replyMarkup };
-        } catch (error) { return { text: `🧪 TOP CARELESS STRAT\nScreening gagal: ${safeError(error)}`, replyMarkup }; }
+        } catch (error) {
+          const reason = safeError(error);
+          console.warn("Top Careless screening failed:", reason);
+          return { text: `🧪 TOP CARELESS STRAT\nScreening gagal: ${reason}`, replyMarkup };
+        }
       }
       case "/pnl":
       case "/positions": return positionsReply(0, true);
@@ -335,7 +328,7 @@ export function createCommandHandler(options: Options) {
             `💰 Saldo <b>${sol(balance)}</b>`,
             `🛡 Mode <b>${mode}</b>`,
             `📍 Posisi <b>${active}</b> dipantau · <b>${ignored}</b> dijeda`,
-            `⏱ Timeframe <b>${agent.getTimeframe()}</b> · Swap ${config.swap.enabled ? "aktif" : "nonaktif"}`,
+            `🤖 Otomatisasi <b>${config.automation.enabled ? "DRY-RUN aktif" : "nonaktif"}</b> · Swap ${config.swap.enabled ? "aktif" : "nonaktif"}`,
             `🧯 Gagal close <b>${failures}/3</b>`,
             `🕒 ${wib(Date.now())}`,
           ].join("\n"),
@@ -351,19 +344,20 @@ export function createCommandHandler(options: Options) {
         }
         if (args.length) return { text: "Gunakan /config untuk melihat pengaturan atau /config set <path> <nilai> untuk mengubah." };
         return {
-          text: `⚙️ KONFIGURASI YOLOW\nMode ${agent.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE"} · timeframe ${agent.getTimeframe()}\nPilih bagian di bawah, lalu tap parameter untuk mengubahnya.\n\nBisa juga: /config set <path> <nilai>\nMode dry_run dan secret tidak dapat diubah lewat menu.`,
+          text: `⚙️ KONFIGURASI YOLOW\nMode ${agent.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE"}\nPilih bagian di bawah, lalu tap parameter untuk mengubahnya.\n\nBisa juga: /config set <path> <nilai>\nMode dry_run dan secret tidak dapat diubah lewat menu.`,
           replyMarkup: configMenuMarkup,
         };
       }
-      case "/tf": {
-        const timeframe = args[0];
-        if (timeframe === undefined) return {
-          text: `⏱ TIMEFRAME INDIKATOR\nAktif: ${agent.getTimeframe()}\nPilih timeframe baru:`,
-          replyMarkup: { inline_keyboard: [["5m", "15m", "30m", "1h"].map((value) => ({ text: `${agent.getTimeframe() === value ? "✓ " : ""}${value}`, callback_data: `cmd:/tf ${value}` }))] },
-        };
-        if (!timeframes.includes(timeframe as any)) return { text: "Gunakan /tf <5m|15m|30m|1h>." };
-        await agent.setTimeframe(timeframe as (typeof timeframes)[number]);
-        return { text: `Timeframe indikator diubah ke ${timeframe}. Data candle sedang diisi ulang.` };
+      case "/tf": return { text: "Exit indikator dan Timeframe sudah dihapus. Buka /auto untuk strategi baru." };
+      case "/auto": {
+        if (args[0] === "unblock" && args[1]) {
+          try { agent.automation.unblock(args[1]); return { text: `Blokir token ${args[1]} dihapus. Syarat entry tetap diperiksa kembali.` }; }
+          catch (error) { return { text: safeError(error) }; }
+        }
+        if (args.length) return { text: "Gunakan /auto atau /auto unblock <mint>." };
+        return { text: agent.automation?.status() ?? "Otomatisasi belum tersedia.", replyMarkup: { inline_keyboard: [[
+          { text: "🔄 Refresh", callback_data: "cmd:/auto" }, { text: "⚙️ Pengaturan", callback_data: "config:section:automation" },
+        ]] } };
       }
       case "/ignore":
       case "/unignore": {
@@ -386,8 +380,13 @@ export function createCommandHandler(options: Options) {
         if (!Number.isInteger(count) || count < 1 || count > 50) return { text: "Gunakan /history [1–50]." };
         const rows = db.prepare(`SELECT trade_id,mode,position_id,trigger_reason,total_sol_returned,pnl_sol,finalized_at
           FROM trade_history ORDER BY COALESCE(exit_at,first_seen_at) DESC LIMIT ?`).all(count) as Array<Record<string, any>>;
-        if (!rows.length) return { text: "Journal masih kosong." };
-        return { text: `📒 RIWAYAT ${rows.length} TRADE\n` + rows.map((row) => `#${row.trade_id} · ${row.mode.toUpperCase()} · ${row.trigger_reason ?? "berjalan"}\n${row.position_id} · kembali ${row.total_sol_returned == null ? "—" : `${Number(row.total_sol_returned).toFixed(5)} SOL`} · PnL ${row.pnl_sol == null ? "belum dihitung" : `${Number(row.pnl_sol).toFixed(5)} SOL`}\n${wib(row.finalized_at)}`).join("\n\n") };
+        const replyMarkup = { inline_keyboard: [
+          [{ text: "🔄 Refresh", callback_data: `cmd:/history ${count}` }, { text: "📈 Statistik", callback_data: "cmd:/stats" }],
+          [{ text: "📤 Export CSV", callback_data: "cmd:/export" }],
+        ] };
+        const hint = "\n\nDetail: /trade <trade_id|position_id>\nCatatan: /note <trade_id|position_id> <catatan>\nTag: /tag <trade_id|position_id> <tag>\nRetry swap: /retryswap <position_id>\nContoh: /trade 12 · /note 12 evaluasi exit · /tag 12 oor";
+        if (!rows.length) return { text: `📒 JURNAL\nJurnal masih kosong.${hint}`, replyMarkup };
+        return { text: `📒 RIWAYAT ${rows.length} TRADE\n` + rows.map((row) => `#${row.trade_id} · ${row.mode.toUpperCase()} · ${row.trigger_reason ?? "berjalan"}\n${row.position_id} · kembali ${row.total_sol_returned == null ? "—" : `${Number(row.total_sol_returned).toFixed(5)} SOL`} · PnL ${row.pnl_sol == null ? "belum dihitung" : `${Number(row.pnl_sol).toFixed(5)} SOL`}\n${wib(row.finalized_at)}`).join("\n\n") + hint, replyMarkup };
       }
       case "/trade": {
         if (!args[0]) return { text: "Gunakan /trade <trade_id|position_id>." };
@@ -459,6 +458,7 @@ export function createCommandHandler(options: Options) {
         return { text: `Retry swap dimulai untuk ${rows[0].position_id}.` };
       }
       case "/golive": {
+        if (config.automation.enabled) return { text: "Otomatisasi saat ini hanya DRY-RUN. Nonaktifkan automation.enabled sebelum meminta LIVE." };
         if (!agent.executor.isDryRun()) return { text: "Agent sudah dalam LIVE mode." };
         if (!options.keypairPath) return { text: "AGENT_KEYPAIR_PATH belum dikonfigurasi; mode LIVE tidak tersedia." };
         await loadSigner(options.keypairPath, wallet);
@@ -474,6 +474,18 @@ export function createCommandHandler(options: Options) {
   const onCallback = async (data: string): Promise<Reply | undefined> => {
     // Any explicit UI interaction other than requesting typed input means the user moved on.
     if (!data.startsWith("config:input:")) pendingConfigInput.delete(options.chatId);
+    if (/^config:section:(strategy|oor)$/.test(data) || /^config:(edit|input|set|back):(indicator_exit|oor_exit|pool_overrides)\./.test(data)) {
+      return { text: "Exit indikator dan OOR berbasis bin sudah dihapus. Buka /auto untuk strategi baru.", replyMarkup: configMenuMarkup };
+    }
+    const paperView = /^auto:(position|ignore|unignore):([a-f0-9-]{36})$/.exec(data);
+    if (paperView) {
+      if (paperView[1] !== "position") agent.automation.setIgnored(paperView[2], paperView[1] === "ignore");
+      const item = agent.automation.list(false).find((row) => row.id === paperView[2]);
+      return { text: agent.automation.detail(paperView[2]), replyMarkup: { inline_keyboard: [
+        ...(item?.state === "OPEN" ? [[{ text: item.ignored ? "▶️ Aktifkan exit" : "⏸ Abaikan exit", callback_data: `auto:${item.ignored ? "unignore" : "ignore"}:${item.id}` }]] : []),
+        [{ text: "⬅️ Kembali ke daftar", callback_data: "positions:page:0" }],
+      ] } };
+    }
     const section = /^config:section:([a-z]+)$/.exec(data);
     if (section) {
       const text = configSectionText(config, section[1]);
@@ -516,6 +528,7 @@ export function createCommandHandler(options: Options) {
       return { text: "Konfirmasi LIVE dibatalkan. Agent tetap DRY-RUN." };
     }
     if (data === "golive:confirm") {
+      if (config.automation.enabled) return { text: "Konfirmasi LIVE ditolak selama otomatisasi DRY-RUN aktif." };
       const expires = Number(getMeta(db, "golive_confirmation_until") ?? 0);
       if (expires < Date.now()) return { text: "Konfirmasi sudah kedaluwarsa. Jalankan /golive kembali." };
       if (!options.keypairPath) return { text: "AGENT_KEYPAIR_PATH belum dikonfigurasi." };
@@ -542,7 +555,7 @@ export function createCommandHandler(options: Options) {
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);
-      if (!["/status", "/positions", "/pnl", "/topcareless", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
+      if (!["/status", "/auto", "/positions", "/pnl", "/topcareless", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
       return onCommand(command, args);
     }
     return undefined;
@@ -553,7 +566,7 @@ export function createCommandHandler(options: Options) {
     if (!pending) return undefined;
     const trimmed = text.trim();
     const label = trimmed.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
-    if (label === "menu" || label === "top trending" || trimmed.startsWith("/")) {
+    if (["menu", "posisi & pnl", "top careless", "top trending"].includes(label) || trimmed.startsWith("/")) {
       // Navigation or a command abandons the pending input, matching callback behavior.
       pendingConfigInput.delete(options.chatId);
       return undefined;

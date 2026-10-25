@@ -1,25 +1,23 @@
 {
   "config_version": 1,
-
   "timezone": "Asia/Jakarta",
-
   "mode": {
-   "dry_run": true,
-   "shadow_candles": true,
-   "position_poll_interval_sec": 300
+    "dry_run": true,
+    "position_poll_interval_sec": 300
   },
-
   "rpc": {
     "http_base": "https://mainnet.helius-rpc.com",
     "ws_base": "wss://mainnet.helius-rpc.com",
     "oor_fallback_poll_interval_sec": 15
   },
-
   "candles": {
     "primary": "gmgn",
-    "fallback_chain": ["meteora", "geckoterminal", "onchain_ticks"],
+    "fallback_chain": [
+      "meteora",
+      "geckoterminal",
+      "onchain_ticks"
+    ],
     "price_unit": "usd",
-    "poll_interval_sec": 20,
     "grace_window_sec": 60,
     "backfill_candles": 200,
     "stale_data_pause_sec": 300,
@@ -41,38 +39,6 @@
       }
     }
   },
-
-  "indicator_exit": {
-    "enabled": true,
-    "timeframe": "15m",
-    "min_age_candles": 1,
-    "indicators": {
-      "rsi": { "period": 2, "overbought": 90 },
-      "bb": { "period": 20, "std_dev": 2.0 },
-      "macd": { "fast": 12, "slow": 26, "signal": 9 }
-    },
-    "rule": {
-      "rsi_required": true,
-      "confirmations_any_of": ["bb_breakout", "macd_first_green"]
-    }
-  },
-
-  "oor_exit": {
-    "evaluation": "live",
-    "below": {
-      "enabled": true,
-      "trigger_bins": 20,
-      "confirm_sec": 5
-    },
-    "above": {
-      "enabled": true,
-      "trigger_bins": 20,
-      "confirm_sec": 30
-    }
-  },
-
-  "pool_overrides": {},
-
   "execution": {
     "priority_fee": {
       "mode": "fixed",
@@ -81,43 +47,27 @@
     },
     "max_retries": 3
   },
-
   "swap": {
     "enabled": true,
     "output": "SOL",
-    "min_value_usd": 0.5,
+    "min_value_usd": 0.2,
     "slippage_bps": 500,
     "max_slippage_bps": 1500,
     "max_retries": 3,
     "close_empty_token_account": false
   },
-
   "top_careless": {
     "enabled": true,
     "limit": 10,
-    "min_market_cap_usd": 1000000,
+    "min_market_cap_usd": 1500000,
     "min_token_age_days": 3,
     "min_tvl_usd": 5000
   },
-
-  "top_trending": {
-    "enabled": true,
-    "limit": 10,
-    "min_market_cap_usd": 500000,
-    "min_token_age_hours": 6,
-    "max_token_age_days": 60,
-    "min_holders": 1000,
-    "min_tvl_usd": 10000,
-    "min_organic_score": 70,
-    "volume_window": "24h"
-  },
-
   "jupiter": {
     "base_url": "https://api.jup.ag/swap/v2",
     "tokens_base_url": "https://api.jup.ag/tokens/v2",
     "price_base_url": "https://api.jup.ag/price/v3"
   },
-
   "notify": {
     "profit_alert": {
       "enabled": true,
@@ -130,15 +80,18 @@
       "at_time": "08:00"
     }
   },
-
   "history": {
     "enabled": true,
     "record_dry_run_trades": true,
     "snapshot_interval_sec": 300,
     "snapshot_retention_days": 180,
     "candle_audit_retention_days": 60,
-    "context_candles": 50,
-    "post_exit_marks_min": [15, 60, 240, 1440],
+    "post_exit_marks_min": [
+      15,
+      60,
+      240,
+      1440
+    ],
     "csv_export": {
       "enabled": true,
       "dir": "./exports",
@@ -151,8 +104,17 @@
       "keep": 14
     }
   },
-
   "logging": {
     "level": "info"
+  },
+  "automation": {
+    "enabled": false,
+    "max_positions": 15,
+    "position_sol": 0.5,
+    "min_bin_step": 80,
+    "min_price_percent": -80,
+    "profit_percent": 5,
+    "oor_above_percent": 10,
+    "oor_below_percent": 30
   }
 }

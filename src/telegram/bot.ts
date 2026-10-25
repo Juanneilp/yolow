@@ -1,23 +1,16 @@
-import { fetchTopTrending, formatTopTrending, type TopTrendingConfig } from "../market-data/top-trending.ts";
 import { readJsonResponse, safeError, telegramApiBase } from "../security.ts";
 
 type BotOptions = {
   token: string;
   chatId: string;
   userId?: string;
-  config: TopTrendingConfig;
-  trendingEnabled?: () => boolean;
-  jupiterApiKey: string;
-  gmgnApiKey?: string;
-  meteoraBaseUrl: string;
-  jupiterTokensBaseUrl: string;
   signal?: AbortSignal;
   onCommand?: (command: string, args: string[]) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
   onCallback?: (data: string) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
   onText?: (text: string) => Promise<{ text: string; replyMarkup?: Record<string, unknown>; parseMode?: "HTML" } | undefined>;
 };
 
-export const botCommands = [
+const allCommands = [
   { command: "start", description: "Mulai bot dan tampilkan akses cepat" },
   { command: "menu", description: "Buka menu utama Yolow" },
   { command: "help", description: "Lihat semua command dan cara penggunaannya" },
@@ -25,9 +18,8 @@ export const botCommands = [
   { command: "positions", description: "Lihat posisi dan estimasi PnL per posisi dalam SOL" },
   { command: "history", description: "Riwayat trade: /history [1–50]" },
   { command: "stats", description: "Statistik trade: /stats [7d|30d|all]" },
-  { command: "tf", description: "Timeframe indikator: /tf [5m|15m|30m|1h]" },
+  { command: "auto", description: "Status simulasi; /auto unblock <mint> untuk menghapus blokir loss" },
   { command: "export", description: "Unduh jurnal trade sebagai CSV" },
-  { command: "toptrending", description: "Lihat token dan pool Top Trending" },
   { command: "topcareless", description: "Screening pool /SOL: Simple Fee/TVL 24j, lalu volume 24j" },
   { command: "config", description: "Buka konfigurasi; ubah dengan /config set <path> <nilai>" },
   { command: "ignore", description: "Abaikan sinyal exit: /ignore <position_id>" },
@@ -39,9 +31,27 @@ export const botCommands = [
   { command: "golive", description: "Minta aktivasi LIVE; perlu konfirmasi sebelum aktif" },
 ];
 
-const commandHelp = ["🧰 DAFTAR COMMAND", ...botCommands.map(({ command, description }) => `/${command} — ${description}`)].join("\n");
+export const botCommands = ["start", "menu", "status", "positions", "topcareless", "history", "config", "help"]
+  .map((name) => allCommands.find(({ command }) => command === name)!);
 
-export function actionForMessage(text: string): "menu" | "start" | "help" | "positions" | "top_trending" | undefined {
+const commandHelp = [
+  "🧰 BANTUAN YOLOW",
+  ...[
+    { title: "📍 Pemantauan", commands: ["start", "menu", "status", "positions", "ignore", "unignore"] },
+    { title: "🧪 Screening", commands: ["topcareless"] },
+    { title: "📒 Jurnal", commands: ["history", "stats", "export", "trade", "note", "tag", "retryswap"] },
+    { title: "⚙️ Pengaturan", commands: ["auto", "config", "golive", "help"] },
+  ].map(({ title, commands }) => `\n${title}\n${commands.map((name) => {
+    const { command, description } = allCommands.find(({ command }) => command === name)!;
+    return `/${command} — ${description}`;
+  }).join("\n")}`),
+  "\n/pnl — Alias /positions.",
+  "Contoh: /trade 12 · /note 12 evaluasi exit · /tag 12 oor",
+  "Retry swap: /retryswap <position_id> (gunakan ID posisi dari /trade).",
+].join("\n");
+const trendingRemovedText = "Top Trending sudah dihapus. Pilih fitur dari Menu.";
+
+export function actionForMessage(text: string): "menu" | "start" | "help" | "positions" | "top_careless" | "top_trending" | undefined {
   const messageText = text.trim();
   const command = messageText.split(/\s+/)[0]?.split("@")[0]?.toLowerCase();
   const label = messageText.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
@@ -49,6 +59,7 @@ export function actionForMessage(text: string): "menu" | "start" | "help" | "pos
   if (command === "/start") return "start";
   if (command === "/help") return "help";
   if (label === "posisi & pnl") return "positions";
+  if (label === "top careless") return "top_careless";
   if (command === "/toptrending" || label === "top trending") return "top_trending";
 }
 
@@ -60,18 +71,12 @@ export function isAuthorizedUpdate(update: any, chatId: string, userId = chatId)
 
 export const mainMenuMarkup = { inline_keyboard: [
   [{ text: "📊 Status", callback_data: "cmd:/status" }, { text: "📍 Posisi & PnL", callback_data: "cmd:/positions" }],
-  [{ text: "📒 Riwayat", callback_data: "cmd:/history" }, { text: "📈 Statistik", callback_data: "cmd:/stats" }],
-  [{ text: "⏱ Timeframe", callback_data: "cmd:/tf" }, { text: "📤 Export CSV", callback_data: "cmd:/export" }],
-  [{ text: "🔥 Top Trending", callback_data: "top_trending" }, { text: "🧪 Top Careless Strat", callback_data: "cmd:/topcareless" }],
-  [{ text: "⏸ Abaikan exit", callback_data: "cmd:/ignore" }, { text: "▶️ Aktifkan exit", callback_data: "cmd:/unignore" }],
-  [{ text: "📖 Detail trade", callback_data: "cmd:/trade" }, { text: "🔁 Coba swap", callback_data: "cmd:/retryswap" }],
-  [{ text: "📝 Catatan trade", callback_data: "cmd:/note" }, { text: "🏷 Tag trade", callback_data: "cmd:/tag" }],
-  [{ text: "🔴 Live mode", callback_data: "cmd:/golive" }, { text: "🧰 Bantuan command", callback_data: "help" }],
-  [{ text: "⚙️ Konfigurasi", callback_data: "cmd:/config" }],
+  [{ text: "🧪 Top Careless", callback_data: "cmd:/topcareless" }, { text: "📒 Jurnal", callback_data: "cmd:/history" }],
+  [{ text: "⚙️ Pengaturan", callback_data: "cmd:/config" }, { text: "🧰 Bantuan", callback_data: "help" }],
 ] };
 
 const quickAccessMarkup = {
-  keyboard: [[{ text: "🏠 Menu" }, { text: "📍 Posisi & PnL" }]],
+  keyboard: [[{ text: "🏠 Menu" }, { text: "📍 Posisi & PnL" }], [{ text: "🧪 Top Careless" }]],
   resize_keyboard: true,
   is_persistent: true,
   input_field_placeholder: "Pilih fitur Yolow",
@@ -153,31 +158,6 @@ export async function runBot(options: BotOptions): Promise<void> {
     }
   }
 
-  async function showTopTrending(update?: any): Promise<void> {
-    if (options.trendingEnabled?.() === false) {
-      const text = "🔥 TOP TRENDING\nFitur ini sedang dinonaktifkan di config.json.";
-      if (update) await editOrSend(update, text, mainMenuMarkup);
-      else await send(text, mainMenuMarkup);
-      return;
-    }
-    const tokens = await fetchTopTrending(
-      options.config,
-      options.jupiterApiKey,
-      options.meteoraBaseUrl,
-      options.jupiterTokensBaseUrl,
-      options.gmgnApiKey,
-    );
-    const text = formatTopTrending(tokens, options.config);
-    const markup = {
-      inline_keyboard: [
-        [{ text: "🔄 Refresh", callback_data: "top_trending" }, { text: "⚙️ Filter", callback_data: "config:section:trending" }],
-        [{ text: "🏠 Menu", callback_data: "menu" }],
-      ],
-    };
-    if (update) await editOrSend(update, text, markup, "HTML");
-    else await send(text, markup, "HTML");
-  }
-
   async function showMenu(update?: any): Promise<void> {
     const status = await options.onCommand?.("/status", []);
     const text = `${status?.text ?? "⚡ YOLOW · METEORA DLMM"}\n\nPilih fitur:`;
@@ -215,8 +195,11 @@ export async function runBot(options: BotOptions): Promise<void> {
         try {
           if (update.callback_query) {
             await telegram("answerCallbackQuery", { callback_query_id: update.callback_query.id });
-            if (update.callback_query.data === "top_trending") await showTopTrending(update);
-            else if (update.callback_query.data === "menu") await showMenu(update);
+            if (update.callback_query.data === "top_trending" || update.callback_query.data === "config:section:trending"
+              || update.callback_query.data === "cmd:/toptrending") {
+              await options.onCallback?.("config:cancel");
+              await editOrSend(update, trendingRemovedText, mainMenuMarkup);
+            } else if (update.callback_query.data === "menu") await showMenu(update);
             else if (update.callback_query.data === "help") {
               await editOrSend(update, commandHelp, mainMenuMarkup);
             } else if (options.onCallback) {
@@ -244,9 +227,11 @@ export async function runBot(options: BotOptions): Promise<void> {
             const status = await options.onCommand?.("/status", []);
             await send(status?.text ?? "⚡ YOLOW · METEORA DLMM\nPilih fitur melalui Menu.", quickAccessMarkup, status?.parseMode);
           } else if (action === "top_trending") {
-            await showTopTrending();
+            await send(trendingRemovedText, mainMenuMarkup);
           } else if (options.onCommand) {
-            const [rawCommand = "", ...args] = (action === "positions" ? "/positions" : messageText).trim().split(/\s+/);
+            const commandText = action === "positions" ? "/positions"
+              : action === "top_careless" ? "/topcareless" : messageText;
+            const [rawCommand = "", ...args] = commandText.trim().split(/\s+/);
             const command = rawCommand.split("@")[0];
             if (command.startsWith("/")) {
               const reply = await options.onCommand(command, args);

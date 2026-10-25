@@ -7,7 +7,7 @@ This document defines the visual style and Telegram message patterns for Yolow. 
 ## Visual principles
 
 - Use the dark Telegram look from the reference: dark background, slightly lighter card surfaces, bright primary text, and blue accents.
-- Keep the layout compact: wallet summary at the top, followed by action buttons in a two-column grid. A full-width `Top Trending` row is acceptable if needed.
+- Keep the layout compact: wallet summary at the top, followed by action buttons in a two-column grid.
 - Bot-facing messages should be written in Indonesian. Command names must match the PRD, such as `/positions` and `/ignore`.
 - Use emoji as quick visual markers. Always include text for important statuses so meaning does not rely on color alone.
 - Borrow visual style only. Do not copy the reference bot menus or capabilities.
@@ -52,38 +52,43 @@ The inline menu uses Yolow features:
 | Row | Buttons |
 |---|---|
 | 1 | Status · Posisi & PnL |
-| 2 | History · Statistics |
-| 3 | Timeframe · Export |
-| 4 | Top Trending · Top Careless Strat |
-| 5 | Advanced commands |
+| 2 | Top Careless · Jurnal |
+| 3 | Pengaturan · Bantuan |
 
-The persistent keyboard uses `🏠 Menu` and `📍 Posisi & PnL`. The position shortcut opens the same view as `/positions`; `/start` replaces an older keyboard with the current buttons. The Timeframe button opens the same choices as `/tf <5m|15m|30m|1h>`. Display the active timeframe; a timeframe selected in Telegram persists after restart. RSI, BB, and MACD parameters are not editable through the menu. Advanced commands list the argument-based journal and position commands.
+The persistent keyboard uses `🏠 Menu` and `📍 Posisi & PnL` on the first row, with a full-width `🧪 Top Careless` button on the second row. The shortcuts open `/positions` and `/topcareless`; `/start` replaces an older keyboard. Keyboard navigation cancels pending configuration input. Position detail contains Ignore/Unignore controls. Jurnal opens `/history` with Refresh, Statistics, and Export CSV buttons, including for empty history. Show usage and examples for `/trade`, `/note`, `/tag`, and `/retryswap` rather than argument-free buttons.
 
-### Top Trending results
+Pengaturan opens `/config` with Automation and Live Mode, plus execution, historical data, records, Careless and system sections. `/auto` shows dry-run slots, balances, blocked mints and pending swaps. Old timeframe/indicator/bin-count OOR controls show removal notices. Reject LIVE while automation is active. Configuration parameters remain editable as supported by the command handler.
 
-**Menu** and `/menu` show the wallet summary and inline feature grid; **Top Trending** in that grid and `/toptrending` show 10 qualifying tokens by default. Older Top Trending keyboard labels remain recognized. Use Telegram HTML bold/monospace for hierarchy, a compact filter summary, and a divider between token cards. Each card shows symbol/name, MarketCap, age, holders, SOL-quoted DLMM pair, TVL, Jupiter Organic Score, and 24-hour volume. Show the full mint and pool address as separate `<code>` entities so users can tap to copy the complete values. Only SOL-quoted pools are listed; do not show `/USDC` pairs. Keep actual bot copy in Indonesian. This is a read-only discovery view; do not show buy, swap, or open-position actions.
+Register only `/start`, `/menu`, `/status`, `/positions`, `/topcareless`, `/history`, `/config`, and `/help` in the native Telegram command menu. Help groups all supported commands into Pemantauan, Screening, Jurnal, and Pengaturan, including advanced command usage and the `/pnl` alias. Submenus provide Menu navigation.
 
-Example result block:
-
-```text
-🔥 TOP TRENDING · 10/10
-🔎 MCap ≥ $500K · Age 6h–60d · Holders ≥ 1K · TVL ≥ $10K · Organic ≥ 70
-📊 Meteora DLMM · SOL pairs only · Ranked by 24h volume
-🕒 Updated 03 Oct 2026, 14:05 WIB
-━━━━━━━━━━━━━━━━━━━━
-1. TOKEN · Token Name
-💵 MCap $620K · 🕓 8.4h · 👥 1,240
-🔗 TOKEN/SOL · 💧 TVL $18.2K · 🌱 Organic 82 · 📈 24h $95K
-CA 6GmAFS123456789ABCDEFGHJKLMNPQRSTUVWXYZUNgx · Pool zxTpi4123456789ABCDEFGHJKLMNPQRSTUVWXYZSCLX
-```
+Top Trending has been removed. Old commands, keyboard labels, and discovery/filter buttons show a removal notice and the main menu without fetching market data. Old parameter-editor buttons reject changes to removed parameters.
 
 ### Top Careless Strat
 
-Add **🧪 Top Careless Strat** to the inline feature menu and `/topcareless` to native commands and help. Keep the persistent keyboard as Menu and Posisi & PnL. Use a separate filter section with defaults: enabled, 10 results, market cap ≥ $1M, token age ≥ 3 days, and pool TVL ≥ $5K. All five `top_careless` parameters are editable without restart.
+Use **🧪 Top Careless** in the inline feature menu and `/topcareless` in native commands and help. Keep Top Careless alongside Menu and Posisi & PnL in the persistent keyboard. Use a separate filter section with defaults: enabled, 10 results, market cap ≥ $1.5M, token age ≥ 3 days, and pool TVL ≥ $5K. All five `top_careless` parameters are editable without restart.
 
-Show every qualifying token/SOL pool separately, ranked by Simple Fee/TVL 24h descending, then 24-hour volume descending, then pool address. Estimated base fees = Volume 24h × (base_fee_pct / 100); Simple Fee/TVL (%) = estimated base fees / TVL × 100. Read base_fee_pct from pool_config. Keep APR = Fee/TVL 24h percentage × 365 as a comparison; do not multiply percentages by 100 again or include farm rewards. Missing or invalid comparison data does not exclude a pool. Age comes from Jupiter's first pool timestamp. Do not inherit holder, Organic Score, or maximum-age filters from Top Trending.
+Show every qualifying token/SOL pool separately, ranked by Simple Fee/TVL 24h descending, then 24-hour volume descending, then pool address. Estimated base fees = Volume 24h × (base_fee_pct / 100); Simple Fee/TVL (%) = estimated base fees / TVL × 100. Read base_fee_pct from pool_config. Keep APR = Fee/TVL 24h percentage × 365 as a comparison; do not multiply percentages by 100 again or include farm rewards. Missing or invalid comparison data does not exclude a pool. Age comes from Jupiter's first pool timestamp. Do not apply holder, Organic Score, or maximum-age filters.
 
 Cards show token/SOL, token name, market cap, age, TVL, volume 24h, base fee, Simple Fee/TVL 24h, estimated APR, Fee/TVL 24h, bin step, full copyable CA and pool address, and a **Buka Meteora DLMM** HTML link to `https://app.meteora.ag/dlmm/<pool>`. Example: `Base fee 0.30% · Simple Fee/TVL 24j 3.00%` for volume $100K and TVL $10K. Sanitize labels and escape HTML. Provide Refresh, Filter and Menu navigation. Show unavailable bin step, APR, or Fee/TVL explicitly; exclude records with missing required ranking/filter data or nonpositive TVL. Zero volume and zero base fee are valid. Scan until the final page or the cap of 20 × 100 pools, even when enough results have been found; keep source ordering by Fee/TVL 24h then volume 24h and compute the final ranking locally. If more pages remain beyond the cap, explain that ranking covers only scanned pools even when results are full. Explain empty results when applicable and that the simple estimate excludes dynamic fees and protocol deductions and does not guarantee position returns. Use the existing sender's message splitting for long output.
+
+Use a separate title, result count, active filter block, and update time with timezone. Each pool card starts with its rank and pair in bold, then its name in italics. Use medals for the first three ranks and a neutral marker after that; ranking only reflects the stated metric. Put the bold Simple Fee/TVL score first, followed by TVL/volume, market cap/age, base fee/bin step, and comparison APR/Fee/TVL. Separate addresses and the Meteora link from the metrics with whitespace. Keep the explanation under **Cara baca** at the end. Every HTML tag must close on the same line so message splitting preserves valid formatting.
+
+Example card (Telegram renders the emphasis):
+
+```text
+🥇 1. TOKEN/SOL
+Token Name
+
+💎 Simple Fee/TVL 24j 3.00%
+💧 TVL $10.0K · 📊 Volume 24j $100.0K
+💵 MCap $1.5M · 🕓 Umur 7.0 hari
+⚙️ Base fee 0.30% · Bin step 25
+📈 APR estimasi 36.50% · Fee/TVL 24j 0.10%
+
+CA <full mint address>
+Pool <full pool address>
+↗️ Buka Meteora DLMM
+```
 
 ### Positions and PnL
 
@@ -132,7 +137,7 @@ Use a consistent order: event icon and type, position/pair, reason, key value, W
 
 ```text
 🔴 CLOSE FAILED · BONK/SOL
-Reason: Lower OOR · 21 bins
+Reason: Lower OOR · 30% below lower boundary
 Position: 7xAb…p9Q2
 Time: 03 Oct 2026 14:05 WIB
 Action: Position remains monitored
@@ -147,4 +152,10 @@ Successful close, dust, stale-data, and circuit-breaker messages use the same st
 - Use SOL for SOL balances and values; include units for every number.
 - Keep buttons short and action-oriented. Put details in the position view or command result.
 - The `/golive` confirmation shows the current mode, abbreviated wallet, number of positions to be managed, and swap status before the confirmation button.
-- Exclude reference-image features that are not in the Yolow PRD, including LP creation, DCA, referrals, and other chains. Top Trending is included as a separate, read-only Yolow feature in the PRD.
+- Exclude reference-image features that are not in the Yolow PRD, including LP creation, DCA, referrals, and other chains.
+
+## Automation presentation
+
+Always label entries, closes and swaps as SIMULASI/DRY-RUN. Show real and virtual counts separately; a simulated manual close still consumes a real slot. Virtual cards use 🟡 VIRTUAL and estimated net SOL PnL. Mark closed manual simulations explicitly while the real position remains OPEN. `/auto unblock <mint>` removes a loss block only after its pending swap is resolved. Pending swaps and dust must never be displayed as realized SOL.
+
+Example: `Slot 16/15 · nyata 16 · virtual 0` followed by `Entry menunggu slot`. Notifications state the exit percentage reason, source/paper ID, pool, net estimated SOL profit, and swap result.

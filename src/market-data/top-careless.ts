@@ -1,7 +1,70 @@
 import { PublicKey } from "@solana/web3.js";
-import { escapeHtml, redactSecrets } from "../security.ts";
+import { escapeHtml, readJsonResponse, redactSecrets } from "../security.ts";
 import { SOL_MINT } from "../positions/monitor.ts";
-import { getJson, type Pool, type JupiterToken } from "./top-trending.ts";
+
+type Token = {
+  address?: string;
+  name?: string;
+  symbol?: string;
+  market_cap?: number | string;
+};
+
+type Pool = {
+  address?: string;
+  name?: string;
+  token_x?: Token;
+  token_y?: Token;
+  tvl?: number | string;
+  volume?: Record<string, number | string | undefined>;
+  fee_tvl_ratio?: Record<string, number | string | undefined>;
+  pool_config?: { bin_step?: number; base_fee_pct?: number | string };
+};
+
+type JupiterToken = {
+  id?: string;
+  name?: string;
+  symbol?: string;
+  firstPool?: { createdAt?: string };
+};
+
+export async function getJson<T>(url: URL, headers: Record<string, string> = {}): Promise<T> {
+  let waitedMs = 0;
+  for (let attempt = 0; ; attempt++) {
+    let response: Response;
+    try {
+      response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(15_000) });
+    } catch {
+      throw new Error(`Sumber ${url.hostname} gagal diakses atau melewati batas waktu`);
+    }
+    if (response.status === 429) {
+      const now = Date.now();
+      const retryAfter = response.headers.get("retry-after")?.trim();
+      const reset = response.headers.get("x-ratelimit-reset")?.trim();
+      const delays = [
+        retryAfter ? (/^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - now) : NaN,
+        reset ? Number(reset) * 1000 - now : NaN,
+      ].filter((delay) => Number.isFinite(delay) && delay >= 0);
+      const delay = delays.length ? Math.max(...delays) : (attempt + 1) * 1000;
+      await response.body?.cancel().catch(() => undefined);
+      if (attempt >= 2 || waitedMs + delay > 5000) {
+        const hint = delays.length ? `dalam ${Math.max(1, Math.ceil(delay / 1000))} detik` : "beberapa saat lagi";
+        throw new Error(`Sumber ${url.hostname} merespons HTTP 429. Coba Refresh ${hint}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      waitedMs += delay;
+      continue;
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Sumber ${url.hostname} merespons HTTP ${response.status}`);
+    }
+    try {
+      return await readJsonResponse<T>(response);
+    } catch {
+      throw new Error(`Sumber ${url.hostname} mengembalikan JSON yang tidak valid`);
+    }
+  }
+}
 
 export type TopCarelessConfig = {
   enabled: boolean;
@@ -81,10 +144,10 @@ export function selectTopCareless(pools: Pool[], tokens: Map<string, JupiterToke
     .slice(0, config.limit);
 }
 
-export async function fetchTopCareless(config: TopCarelessConfig, apiKey: string, meteoraBaseUrl: string, jupiterTokensBaseUrl: string): Promise<{ pools: CarelessPool[]; limited: boolean }> {
-  const selected = new Map<string, CarelessPool>();
+export async function fetchTopCareless(config: TopCarelessConfig, apiKey: string, meteoraBaseUrl: string, jupiterTokensBaseUrl: string, eligibility: { excludedMints?: Set<string>; minBinStep?: number } = {}): Promise<{ pools: CarelessPool[]; limited: boolean }> {
+  const pools: Pool[] = [];
+  const mints = new Set<string>();
   const tokens = new Map<string, JupiterToken>();
-  const queried = new Set<string>();
   const now = Date.now();
   let pages = 1;
   let limited = false;
@@ -93,27 +156,30 @@ export async function fetchTopCareless(config: TopCarelessConfig, apiKey: string
     url.search = new URLSearchParams({ page: String(page), page_size: "100",
       sort_by: "fee_tvl_ratio_24h:desc,volume_24h:desc", filter_by: `tvl>=${config.min_tvl_usd}` }).toString();
     const body = await getJson<{ data?: Pool[]; pages?: number }>(url);
-    if (!Array.isArray(body.data) || body.data.length > 100 || !Number.isSafeInteger(body.pages) || body.pages! < 0 ||
+    if (!body || !Array.isArray(body.data) || body.data.length > 100 || !Number.isSafeInteger(body.pages) || body.pages! < 0 ||
       body.data.some((pool) => !pool || typeof pool !== "object")) throw new Error("Respons daftar pool Meteora tidak sesuai format");
     pages = body.pages!;
     if (page === 20 && pages > page) limited = true;
     if (!body.data.length) break;
-    const mints = [...new Set(body.data.flatMap((pool) => {
+    for (const pool of body.data) {
       const token = candidate(pool, config);
-      return token && !queried.has(token.address!) ? [token.address!] : [];
-    }))];
-    for (let offset = 0; offset < mints.length; offset += 100) {
-      const batch = mints.slice(offset, offset + 100);
-      const tokenUrl = new URL(`${jupiterTokensBaseUrl.replace(/\/$/, "")}/search`);
-      tokenUrl.searchParams.set("query", batch.join(","));
-      const metadata = await getJson<JupiterToken[]>(tokenUrl, { "x-api-key": apiKey });
-      if (!Array.isArray(metadata)) throw new Error("Respons token Jupiter tidak sesuai format");
-      for (const mint of batch) queried.add(mint);
-      for (const token of metadata) if (token && typeof token.id === "string" && batch.includes(token.id)) tokens.set(token.id, token);
+      if (token && !eligibility.excludedMints?.has(token.address!) &&
+          (eligibility.minBinStep === undefined || (Number.isSafeInteger(pool.pool_config?.bin_step) && pool.pool_config!.bin_step! >= eligibility.minBinStep))) {
+        pools.push(pool);
+        mints.add(token.address!);
+      }
     }
-    for (const pool of selectTopCareless(body.data, tokens, config, now)) selected.set(pool.address, pool);
   }
-  return { pools: [...selected.values()].sort(comparePools).slice(0, config.limit), limited };
+  const uniqueMints = [...mints];
+  for (let offset = 0; offset < uniqueMints.length; offset += 100) {
+    const batch = uniqueMints.slice(offset, offset + 100);
+    const tokenUrl = new URL(`${jupiterTokensBaseUrl.replace(/\/$/, "")}/search`);
+    tokenUrl.searchParams.set("query", batch.join(","));
+    const metadata = await getJson<JupiterToken[]>(tokenUrl, { "x-api-key": apiKey });
+    if (!Array.isArray(metadata)) throw new Error("Respons token Jupiter tidak sesuai format");
+    for (const token of metadata) if (token && typeof token.id === "string" && batch.includes(token.id)) tokens.set(token.id, token);
+  }
+  return { pools: selectTopCareless(pools, tokens, config, now), limited };
 }
 
 export function formatTopCareless(result: { pools: CarelessPool[]; limited: boolean }, config: TopCarelessConfig, timezone: string, updatedAt = new Date()): string {
@@ -122,26 +188,39 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
   const percent = (value: number | undefined) => value === undefined ? "Belum tersedia"
     : `${value > 0 && value < 0.01 ? "&lt;0.01" : value.toFixed(2)}%`;
   const lines = [
-    `🧪 <b>TOP CARELESS STRAT</b> <code>${result.pools.length}/${config.limit}</code>`,
-    `🔎 MCap ≥ ${usd(config.min_market_cap_usd)} · Umur ≥ ${config.min_token_age_days} hari · TVL ≥ ${usd(config.min_tvl_usd)}`,
-    "📊 Pool /SOL · Urut Simple Fee/TVL 24j, lalu volume 24j terbesar",
-    `🕒 Data ${new Intl.DateTimeFormat("id-ID", { timeZone: timezone, dateStyle: "medium", timeStyle: "medium" }).format(updatedAt)}`,
-    "━━━━━━━━━━━━━━━━━━",
+    "🧪 <b>TOP CARELESS STRAT</b>",
+    `📋 <b>${result.pools.length}/${config.limit} pool</b> · Meteora DLMM · Pasangan SOL`,
+    "",
+    "🔎 <b>Filter aktif</b>",
+    `MCap ≥ ${usd(config.min_market_cap_usd)} · Umur ≥ ${config.min_token_age_days} hari`,
+    `TVL ≥ ${usd(config.min_tvl_usd)} · Maks. ${config.limit} pool`,
+    "",
+    "📊 Urut Simple Fee/TVL 24j, lalu volume 24j terbesar",
+    `🕒 Diperbarui ${new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" }).format(updatedAt)}`,
   ];
   for (const [index, pool] of result.pools.entries()) lines.push(
-    `<b>${index + 1}. ${label(pool.symbol, 16)}/SOL</b> · ${label(pool.name)}`,
-    `💵 MCap ${usd(pool.marketCapUsd)} · 🕓 ${pool.ageDays.toFixed(1)} hari · 💧 TVL ${usd(pool.tvlUsd)}`,
-    `📈 Volume 24j ${usd(pool.volume24h)} · APR estimasi <b>${percent(pool.aprPercent)}</b>`,
-    `Base fee ${percent(pool.baseFeePercent)} · Simple Fee/TVL 24j <b>${percent(pool.simpleFeeTvl24hPercent)}</b>`,
-    `Fee/TVL 24j ${percent(pool.feeTvl24hPercent)} · Bin step <b>${pool.binStep ?? "Belum tersedia"}</b>`,
+    "",
+    "━━━━━━━━━━━━━━━━━━",
+    `${["🥇", "🥈", "🥉"][index] ?? "▫️"} <b>${index + 1}. ${label(pool.symbol, 16)}/SOL</b>`,
+    `<i>${label(pool.name)}</i>`,
+    "",
+    `💎 Simple Fee/TVL 24j <b>${percent(pool.simpleFeeTvl24hPercent)}</b>`,
+    `💧 TVL <b>${usd(pool.tvlUsd)}</b> · 📊 Volume 24j <b>${usd(pool.volume24h)}</b>`,
+    `💵 MCap <b>${usd(pool.marketCapUsd)}</b> · 🕓 Umur <b>${pool.ageDays.toFixed(1)} hari</b>`,
+    `⚙️ Base fee ${percent(pool.baseFeePercent)} · Bin step <b>${pool.binStep ?? "Belum tersedia"}</b>`,
+    `📈 APR estimasi <b>${percent(pool.aprPercent)}</b> · Fee/TVL 24j ${percent(pool.feeTvl24hPercent)}`,
+    "",
     `CA <code>${escapeHtml(pool.mint)}</code>`,
     `Pool <code>${escapeHtml(pool.address)}</code>`,
-    `<a href="https://app.meteora.ag/dlmm/${encodeURIComponent(pool.address)}">Buka Meteora DLMM</a>`,
-    "━━━━━━━━━━━━━━━━━━",
+    `↗️ <a href="https://app.meteora.ag/dlmm/${encodeURIComponent(pool.address)}">Buka Meteora DLMM</a>`,
   );
-  if (!result.pools.length) lines.push("Belum ada pool yang memenuhi semua filter.");
+  lines.push("", "━━━━━━━━━━━━━━━━━━");
+  if (!result.pools.length) lines.push("🔎 <b>Belum ada pool yang memenuhi semua filter.</b>", "Ubah Filter atau coba Refresh beberapa saat lagi.", "");
   if (result.limited) lines.push("⚠️ Cakupan terbatas: batas 20 halaman × 100 pool tercapai; ranking hanya dari pool yang diperiksa.");
   else if (result.pools.length < config.limit) lines.push(`ℹ️ Hanya ${result.pools.length} pool memenuhi semua filter.`);
-  lines.push("Simple Fee/TVL 24j = Volume 24j × Base fee (%) ÷ TVL. Estimasi belum memperhitungkan dynamic fee atau potongan protokol. APR = Fee/TVL 24j × 365, tanpa farm reward; bukan jaminan hasil posisi. Umur berdasarkan firstPool Jupiter.");
+  lines.push("", "ℹ️ <b>Cara baca</b>",
+    "<i>Simple Fee/TVL 24j = Volume 24j × Base fee (%) ÷ TVL.</i>",
+    "<i>Estimasi belum termasuk dynamic fee atau potongan protokol.</i>",
+    "<i>APR = Fee/TVL 24j × 365, tanpa farm reward; bukan jaminan hasil posisi. Umur berdasarkan firstPool Jupiter.</i>");
   return lines.join("\n");
 }

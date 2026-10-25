@@ -147,9 +147,8 @@ function harness() {
   const position = { id: positionKey.toBase58(), pool: poolKey.toBase58(), tokenMint: mint.toBase58(), quoteMint: solMint.toBase58(),
     lowerBinId: 0, upperBinId: 1, firstSeenAt: 0, ignored: false, state: "CLOSED" as const };
   const now = Date.now();
-  const candleTime = Math.floor((now - config.candles.grace_window_sec * 1000) / 300000) * 300000 - 300000;
-  const trigger: Trigger = { positionId: position.id, pool: position.pool, reason: "INDICATOR", detectedAt: now, confirmedAt: now,
-    detail: { candleTime, timeframe: "5m", unit: "usd", close: 1 } };
+  const trigger: Trigger = { positionId: position.id, pool: position.pool, reason: "TAKE_PROFIT", detectedAt: now, confirmedAt: now,
+    detail: { snapshotAt: now, unit: "usd", close: 1 } };
   return { db, config, connection, executor, options, position, trigger, broadcasts, notifications, delta };
 }
 
@@ -364,12 +363,12 @@ test("SEC 05 a fresh signal that expires during preparation is rejected before b
     const h = harness();
     try {
       h.connection.simulateTransaction = (async () => {
-        h.trigger.detail.candleTime = Date.now() - 86400000;
+        h.trigger.detail.snapshotAt = Date.now() - 86400000;
         return { value: { err: null } };
       }) as any;
       await h.executor.execute(h.trigger);
       assert.equal(h.broadcasts.length, 0);
-      assert.equal(h.db.prepare("SELECT outcome FROM triggers ORDER BY id DESC LIMIT 1").get()!.outcome, "STALE_CANDLE");
+      assert.equal(h.db.prepare("SELECT outcome FROM triggers ORDER BY id DESC LIMIT 1").get()!.outcome, "STALE_PRICE");
     } finally { h.db.close(); }
   });
 });
@@ -378,7 +377,7 @@ test("SEC 05 rejects queued stale triggers before broadcast", async () => {
   await withPool(async () => {
     const h = harness();
     try {
-      h.trigger.detail.candleTime = Date.now() - 86400000;
+      h.trigger.detail.snapshotAt = Date.now() - 86400000;
       await h.executor.execute(h.trigger);
       assert.equal(h.broadcasts.length, 0);
       assert.equal(h.db.prepare("SELECT count(*) AS n FROM transactions").get()!.n, 0);

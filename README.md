@@ -1,6 +1,6 @@
 # Yolow Agent
 
-Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per posisi, dan mengirim notifikasi ke satu chat Telegram yang diizinkan. Sinyal indikator atau out-of-range (OOR) dapat memicu penutupan posisi penuh, dilanjutkan swap token ke SOL melalui Jupiter. Mode awal instalasi baru adalah **DRY-RUN**: simulasi tanpa tanda tangan atau broadcast transaksi.
+Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per posisi, dan mengirim notifikasi ke satu chat Telegram yang diizinkan. Otomatisasi SPOT SOL mensimulasikan pembukaan dan penutupan berdasarkan profit neto SOL serta out-of-range (OOR) persentase. Exit RSI/BB/MACD dan OOR berbasis jumlah bin telah dihapus. Mode awal instalasi baru adalah **DRY-RUN**: simulasi tanpa tanda tangan atau broadcast transaksi.
 
 ## Daftar isi
 
@@ -16,7 +16,7 @@ Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per
 
 ### 1. Siapkan kebutuhan
 
-Pasang Git, **Node.js ≥ 22.21.0**, dan npm. Siapkan bot Telegram beserta token dan ID chat, API key Helius, serta public key wallet yang akan dipantau. API key Jupiter diperlukan dengan konfigurasi bawaan karena swap, Top Trending, dan Top Careless Strat aktif. GMGN opsional untuk data ATH Top Trending.
+Pasang Git, **Node.js ≥ 22.21.0**, dan npm. Siapkan bot Telegram beserta token dan ID chat, API key Helius, serta public key wallet yang akan dipantau. API key Jupiter diperlukan dengan konfigurasi bawaan karena swap dan Top Careless Strat aktif.
 
 ```sh
 node --version
@@ -80,16 +80,30 @@ pm2 save
 
 ## Penggunaan Telegram
 
-Kirim `/menu` atau gunakan tombol **Menu**. Command didaftarkan dengan deskripsi bahasa Indonesia; `/help` menampilkan petunjuk yang sama. Kontrol memerlukan kecocokan **ID chat dan ID pengirim**.
+Kirim `/menu` atau gunakan tombol **Menu**. Delapan command utama didaftarkan dengan deskripsi bahasa Indonesia: `/start`, `/menu`, `/status`, `/positions`, `/topcareless`, `/history`, `/config`, dan `/help`. Command lanjutan tetap bisa diketik; `/help` memuat daftar lengkap beserta contoh penggunaan. Kontrol memerlukan kecocokan **ID chat dan ID pengirim**.
 
-Keyboard bawah menyediakan **🏠 Menu** dan **📍 Posisi & PnL**. Tombol Posisi & PnL membuka tampilan yang sama dengan `/positions`. Kirim `/start` sekali setelah pembaruan untuk mengganti keyboard lama. Top Trending tersedia melalui menu utama atau `/toptrending`.
+Keyboard bawah menyediakan **🏠 Menu** dan **📍 Posisi & PnL** pada baris pertama, serta **🧪 Top Careless** pada baris kedua. Pintasan Posisi & PnL dan Top Careless membuka tampilan yang sama dengan `/positions` dan `/topcareless`. Kirim `/start` sekali setelah pembaruan untuk mengganti keyboard lama.
+
+Menu utama memakai enam tombol:
+
+| Baris | Kiri | Kanan |
+| --- | --- | --- |
+| 1 | 📊 Status | 📍 Posisi & PnL |
+| 2 | 🧪 Top Careless | 📒 Jurnal |
+| 3 | ⚙️ Pengaturan | 🧰 Bantuan |
+
+**Jurnal** membuka riwayat dengan Refresh, Statistik, dan Export CSV, termasuk saat belum ada trade. **Pengaturan** memuat Otomatisasi, Live Mode dengan konfirmasi, dan bagian konfigurasi. `/auto` menampilkan status otomatisasi dan daftar token yang diblokir. Abaikan/Aktifkan exit tersedia di detail posisi. Bantuan mengelompokkan command menjadi Pemantauan, Screening, Jurnal, dan Pengaturan.
+
+Fitur utama Yolow: pemantauan posisi dan estimasi PnL, simulasi entry/exit SPOT dan swap ke SOL, notifikasi profit/status, jurnal dan export, serta screening Top Careless.
+
+Top Trending sudah dihapus. Command dan tombol lama menampilkan pemberitahuan penghapusan. Blok `top_trending` pada konfigurasi lama diabaikan dan tidak dapat diedit; konfigurasi lokal tidak ditulis ulang saat startup. Tidak diperlukan migrasi database. Restart bot untuk mendaftarkan daftar command terbaru.
 
 | Command | Fungsi / nilai bawaan |
 | --- | --- |
 | `/start`, `/menu`, `/help` | Mulai, buka menu, atau lihat bantuan. |
 | `/status` | Status wallet, proses, dan mode eksekusi efektif. |
 | `/positions`, `/pnl` | Daftar gabungan Posisi & PnL; `/pnl` merupakan alias. |
-| `/tf [5m\|15m\|30m\|1h]` | Lihat/ubah timeframe global; pilihan efektif disimpan di SQLite. |
+| `/auto`, `/auto unblock <mint>` | Status simulasi dan hapus blokir token setelah loss. |
 | `/ignore <position_id>`, `/unignore <position_id>` | Abaikan/aktifkan sinyal exit; pemantauan PnL tetap berjalan. |
 | `/history [1–50]` | Riwayat trade; default 10 entri. |
 | `/trade <trade_id\|position_id>` | Detail trade, swap, catatan, dan harga setelah exit. |
@@ -97,7 +111,6 @@ Keyboard bawah menyediakan **🏠 Menu** dan **📍 Posisi & PnL**. Tombol Posis
 | `/note <trade_id\|position_id> <catatan>` | Simpan catatan trade. |
 | `/tag <trade_id\|position_id> <tag>` | Tambahkan tag trade. |
 | `/export` | Unduh jurnal CSV. |
-| `/toptrending` | Ranking token/pool dengan tombol Refresh dan Filter. |
 | `/topcareless` | Screening Top Careless Strat: pool /SOL, urut Simple Fee/TVL 24 jam lalu volume 24 jam. |
 | `/config`, `/config set <path> <nilai>` | Buka editor atau ubah parameter yang diizinkan. |
 | `/retryswap <position_id>` | Minta retry swap dari hasil close terkonfirmasi yang masih tersisa. |
@@ -111,6 +124,23 @@ Persentase OOR adalah jarak harga dari batas range yang terlewati, mengikuti uru
 
 PnL berasal dari indeks Meteora sejak posisi dibuka, termasuk fee/reward menurut perhitungan penyedia; **belum dikurangi gas dan slippage likuidasi**. Angka ini terpisah dari PnL jurnal DRY-RUN/LIVE. Refresh latar belakang berjalan setiap 60 detik tanpa RPC Helius. Menu/Refresh memakai batas minimum 10 detik per pool; pagination/detail memakai cache normal. Fetch gagal mempertahankan data terakhir dengan peringatan, lalu menunggu minimal 60 detik atau sesuai `Retry-After`. Waktu saldo terakhir dari penyedia yang tidak berubah tidak otomatis berarti fetch gagal.
 
+### Otomatisasi dry-run
+
+Aktifkan `automation.enabled: true` hanya dengan mode efektif DRY-RUN. `/auto` menunjukkan slot nyata/virtual, perubahan saldo simulasi, swap tertunda, dan mint yang diblokir. Pengaturan awal instalasi baru tetap nonaktif agar aktivasi disengaja.
+
+- Entry memakai SPOT **SOL saja**, modal **0,5 SOL**, TOKEN/SOL, bin step ≥80, range **−80% hingga 0%** dari entry. Orientasi SOL di X/Y ditangani dalam perhitungan harga dan distribusi.
+- Screening mengikuti Top Careless: MCAP ≥**$1,5M**, umur ≥**3 hari**, TVL ≥**$5K**, urut Simple Fee/TVL lalu volume. Otomatisasi mempertahankan batas minimum ini walau filter tampilan diturunkan. Mint/pool aktif dan token loss dikeluarkan sebelum batas hasil.
+- Entry ditolak bila biaya non-refundable tidak terbukti nol. Seluruh bin array dan bitmap diperiksa; composition fee, ekstensi token yang belum didukung ditolak. Gas jaringan diperbolehkan; rent posisi refundable dipisahkan dan dikembalikan dalam ledger close.
+- Maksimum **15 posisi**, termasuk posisi manual di Meteora dan reservasi/posisi virtual. Close simulasi atas posisi manual **tidak membebaskan slot nyata**.
+- Exit berlaku juga untuk posisi manual TOKEN/SOL, kecuali `/ignore`. Urutan prioritas: **OOR bawah ≥30%**, **OOR atas ≥10%**, lalu **profit neto ≥5% SOL**. OOR dihitung dari batas range yang terlewati, bukan jumlah bin atau harga entry. Profit memakai quote minimum setelah slippage dan estimasi gas entry/close/swap; rent dan saldo token wallet lama tidak dihitung sebagai profit.
+- Setelah OOR atas, pool yang sama diprioritaskan hanya jika seluruh syarat dan larangan duplikat masih berlaku. Setelah profit, gunakan screening baru. Setelah loss, blokir mint dan cari token lain; gunakan `/auto unblock <mint>` untuk mengizinkannya kembali.
+- Setelah loss, simulasi swap **seluruh saldo wallet mint tersebut**, termasuk saldo sebelum posisi ditutup. Bagian saldo lama dicatat terpisah dari profit LP. Setiap swap harus bernilai ≥**$0,20**; dust tetap token, tanpa gas swap dan tanpa kredit SOL. Route/quote gagal meninggalkan `CLOSING` untuk dicoba ulang, tanpa close atau kredit ganda.
+- Pengamatan harga memakai WebSocket dengan fallback 15 detik; siklus exit 15 detik, valuasi profit 60 detik, screening entry 5 menit atau setelah close. Screening/quote entry dilewati bila slot penuh. Data/quote berumur >2 menit ditolak.
+
+Posisi virtual, model bin, ledger, blokir mint dan status close disimpan di SQLite. Jurnal simulasi memakai ID `paper:<uuid>` terpisah; posisi nyata tetap OPEN. `/positions` membedakan nyata, virtual, dan close manual yang sudah disimulasikan.
+
+Model virtual mengikuti likuiditas/fee bin yang terbaca; bin kosong memakai fill ideal pada harga bin. Ini estimasi tanpa dampak pasar atau fill mainnet, sehingga hasil tidak identik dengan posisi nyata. Profit posisi manual yang basis deposit/riwayatnya belum tersedia tidak memicu take-profit; OOR tetap dapat disimulasikan.
+
 ### Notifikasi profit
 
 Default: ringkasan gabungan setiap **5 menit** ketika ada posisi terbuka dengan PnL SOL positif dan **PnL > 5%**; tepat 5% tidak memenuhi ambang. Pesan diulang selama masih ada posisi yang memenuhi syarat, termasuk posisi yang exit-nya diabaikan. Urutan berdasarkan persentase terbesar; ringkasan panjang dibagi menjadi pesan bernomor.
@@ -119,19 +149,23 @@ Pemeriksaan mengikuti siklus PnL 60 detik, pertama kali setelah satu interval da
 
 ### Top Careless Strat
 
-Buka **🧪 Top Careless Strat** pada menu utama atau kirim `/topcareless`. Default menampilkan 10 pool **token/SOL** dengan market cap token **≥ $1M**, umur token **≥ 3 hari**, dan TVL **≥ $5.000**. Setiap pool menjadi entri sendiri, termasuk beberapa pool dari token yang sama; tidak ada filter holder, Organic Score, atau umur maksimum yang diwarisi dari Top Trending.
+Buka **🧪 Top Careless** pada menu utama atau kirim `/topcareless`. Default menampilkan 10 pool **token/SOL** dengan market cap token **≥ $1.5M**, umur token **≥ 3 hari**, dan TVL **≥ $5.000**. Setiap pool menjadi entri sendiri, termasuk beberapa pool dari token yang sama; tidak ada filter holder, Organic Score, atau umur maksimum.
 
 Urutan berdasarkan **Simple Fee/TVL 24 jam terbesar**, lalu **volume 24 jam terbesar**, lalu alamat pool untuk nilai yang sama. Estimasi fee = `Volume 24j × (Base fee % / 100)`; Simple Fee/TVL (%) = `Estimasi fee / TVL × 100`, atau langsung `Volume 24j × Base fee (%) / TVL`. Contoh: volume $100.000, base fee 0,3%, dan TVL $10.000 menghasilkan estimasi fee $300 dan Simple Fee/TVL **3,00%**. Base fee berasal dari `pool_config.base_fee_pct` API Meteora. Estimasi ini belum memperhitungkan dynamic fee atau potongan protokol.
 
 Setiap kartu menampilkan base fee dan hasil Simple Fee/TVL 24 jam, serta APR dan Fee/TVL 24 jam dari API sebagai pembanding. APR diannualisasi satu kali dari persentase Fee/TVL 24 jam × 365, tanpa compounding atau farm reward. Data pembanding yang kosong atau tidak valid ditandai **Belum tersedia**. Kartu juga menampilkan market cap, umur, TVL, volume, bin step, CA dan alamat pool lengkap, serta link **Buka Meteora DLMM**. Ini screening baca-saja, bukan pembukaan posisi atau jaminan hasil LP.
 
+Hasil memakai kartu berperingkat dengan Simple Fee/TVL sebagai angka utama. Header memisahkan jumlah hasil, filter aktif, dan waktu pembaruan beserta zona waktu. Tiga peringkat pertama memakai penanda medali; CA dan alamat pool tetap lengkap dan dapat disalin. Penjelasan estimasi tersedia pada bagian **Cara baca** di akhir hasil.
+
 Umur token memakai `firstPool.createdAt` Jupiter, bukan umur pool DLMM. Kandidat tanpa data umur, market cap, volume, atau base fee yang valid dilewati; TVL harus positif. Base fee dan volume nol tetap valid. Pool dengan bin step kosong tetap ditampilkan dengan keterangan belum tersedia. Scan sumber maksimal 20 halaman × 100 pool dan tidak berhenti hanya karena jumlah hasil sudah terpenuhi. Urutan pengambilan API tetap Fee/TVL 24 jam lalu volume 24 jam; bot menghitung ranking akhir berdasarkan Simple Fee/TVL. Bila masih ada halaman setelah batas scan, pesan menjelaskan bahwa ranking hanya mencakup pool yang diperiksa, termasuk ketika hasil sudah penuh. Data baru diambil saat fitur dibuka atau **Refresh** ditekan, tanpa RPC Helius; scan yang lebih luas dapat memperlama respons. Daftar panjang dikirim sebagai beberapa pesan sesuai batas Telegram.
 
-Filter terpisah tersedia melalui **Filter** atau **Konfigurasi → Top Careless Strat**; perubahan aktif tanpa restart:
+Setelah scan selesai, mint kandidat dideduplikasi lintas halaman dan metadata Jupiter diambil per maksimal 100 mint. Ranking dihitung setelah seluruh metadata berhasil diambil. HTTP 429 dicoba ulang maksimal dua kali, dengan total jeda retry maksimal lima detik per request. Waktu tunggu mengikuti `Retry-After` atau `x-ratelimit-reset` yang lebih akhir; tanpa header valid, jedanya satu lalu dua detik. Jika batas terlampaui, bot menampilkan error dan petunjuk Refresh serta mencatat error yang sudah disamarkan di log. Kegagalan API tidak ditampilkan sebagai hasil kosong atau ranking parsial.
+
+Filter terpisah tersedia melalui **Filter** atau **Pengaturan → Top Careless Strat**; perubahan aktif tanpa restart:
 
 ```text
 /config set top_careless.min_tvl_usd 5000
-/config set top_careless.min_market_cap_usd 1000000
+/config set top_careless.min_market_cap_usd 1500000
 /config set top_careless.min_token_age_days 3
 ```
 
@@ -143,8 +177,8 @@ Buka **Konfigurasi → bagian → parameter**. Boolean dan pilihan preset memaka
 /config set notify.profit_alert.interval_minutes 10
 /config set notify.profit_alert.threshold_percent 7.5
 /config set notify.profit_alert.enabled false
-/config set oor_exit.below.trigger_bins 24
-/config set indicator_exit.enabled false
+/config set automation.oor_below_percent 30
+/config set automation.enabled true
 /config set candles.fallback_chain ["meteora","geckoterminal"]
 ```
 
@@ -156,13 +190,13 @@ Buka **Konfigurasi → bagian → parameter**. Boolean dan pilihan preset memaka
 - **Khusus**: memakai alur tersendiri, dijelaskan pada baris parameter.
 - **Belum aktif**: nilai ada dalam konfigurasi, tetapi pengaruh runtime belum diterapkan.
 
-Perubahan manual pada `.env` atau `config.json` selalu memerlukan restart. Mode efektif dan timeframe dapat diwarisi dari SQLite; mengganti file tidak otomatis mengganti nilai tersimpan tersebut. Periksa `/status` dan `/tf`.
+Perubahan manual pada `.env` atau `config.json` selalu memerlukan restart. Mode efektif diwarisi dari SQLite; mengganti file tidak otomatis mengganti nilai tersebut. Periksa `/status` dan `/auto`.
 
 ## Referensi parameter
 
-Kolom **Default** mengikuti file contoh yang disertakan repository, bukan konfigurasi pribadi yang sedang berjalan. Sebagian besar field wajib dicantumkan; jangan menganggap seluruh default otomatis diisi bila field dihapus. Parser secara eksplisit mengisi `top_trending.volume_window = "24h"`, field `top_careless`, dan field `notify.profit_alert` yang belum ada. `jupiter.price_base_url` bersifat opsional dengan fallback di kode.
+Kolom **Default** mengikuti file contoh yang disertakan repository, bukan konfigurasi pribadi yang sedang berjalan. Sebagian besar field wajib dicantumkan; jangan menganggap seluruh default otomatis diisi bila field dihapus. Parser secara eksplisit mengisi field `automation`, `top_careless` dan `notify.profit_alert` yang belum ada. `jupiter.price_base_url` bersifat opsional dengan fallback di kode.
 
-Path dalam tabel konfigurasi relatif terhadap judul kelompok: misalnya `period` pada kelompok `indicator_exit.indicators.rsi` berarti `indicator_exit.indicators.rsi.period`.
+Path parameter relatif terhadap judul kelompok: `enabled` di kelompok `automation` berarti `automation.enabled`.
 
 ### Parameter environment
 
@@ -175,8 +209,7 @@ Semua variabel disimpan di `.env`, diubah melalui file, dan dimuat saat startup.
 | `TELEGRAM_USER_ID` | Mengikuti `TELEGRAM_CHAT_ID` | ID numerik pengguna pengontrol; harus diisi untuk grup. |
 | `HELIUS_API_KEY` | Tanpa default; wajib | Credential RPC HTTP dan WebSocket Helius. |
 | `AGENT_WALLET_PUBKEY` | Tanpa default; wajib | Public key wallet yang dipantau. |
-| `JUPITER_API_KEY` | Tanpa default; wajib jika swap/trending/careless aktif | Akses Jupiter; label token bersifat opsional ketika fitur tersebut nonaktif. |
-| `GMGN_API_KEY` | Kosong; opsional | Data ATH MarketCap Top Trending; tanpa data ditampilkan `N/A`. |
+| `JUPITER_API_KEY` | Tanpa default; wajib jika swap/careless aktif | Akses Jupiter; label token bersifat opsional ketika fitur tersebut nonaktif. |
 | `AGENT_KEYPAIR_PATH` | Kosong; wajib untuk LIVE | Lokasi keypair JSON di luar repository; harus cocok dengan wallet. |
 | `DB_PATH` | `./data/yolow.db` | Lokasi database SQLite. |
 | `CONFIG_PATH` | `./config.json` | Lokasi konfigurasi JSON. |
@@ -188,7 +221,6 @@ Semua variabel disimpan di `.env`, diubah melalui file, dan dimuat saat startup.
 | `config_version` | `1` | Versi format; hanya `1` didukung. | F |
 | `timezone` | `"Asia/Jakarta"` | Zona waktu IANA untuk jadwal dan tampilan; beberapa label pesan masih tertulis WIB. | T+R |
 | `mode.dry_run` | `true` | Mode awal bila belum ada nilai tersimpan di SQLite; LIVE memerlukan signer. | Khusus: `/golive` + konfirmasi |
-| `mode.shadow_candles` | `true` | Flag tersimpan; belum mengontrol pengumpulan candle. | Belum aktif |
 | `mode.position_poll_interval_sec` | `300` | Interval penemuan posisi wallet, detik; integer ≥ 1. | T+R |
 
 ### `rpc`
@@ -206,12 +238,11 @@ Semua variabel disimpan di `.env`, diubah melalui file, dan dimuat saat startup.
 | `primary` | `"gmgn"` | Provider pertama; saat ini GMGN dilewati karena adapter candle belum tersedia. | T |
 | `fallback_chain` | `["meteora","geckoterminal","onchain_ticks"]` | Urutan fallback; hanya Meteora dan GeckoTerminal terintegrasi. | T |
 | `price_unit` | `"usd"` | Unit seri harga: `usd` atau `sol`; harus konsisten dengan sumber chart. | T |
-| `poll_interval_sec` | `20` | Interval refresh candle; integer ≥ 1 detik. | T+R |
 | `grace_window_sec` | `60` | Jeda setelah penutupan candle sebelum dianggap final; integer ≥ 0 detik. | T |
 | `backfill_candles` | `200` | Jumlah candle historis yang diminta/dipakai; integer ≥ 35. | T |
 | `stale_data_pause_sec` | `300` | Batas kegagalan untuk peringatan data terhenti; juga bagian toleransi umur candle; integer ≥ 1 detik. | T |
 
-Candle hanya dipakai jika final dan masih cukup baru. Batas umur mencakup durasi timeframe, grace, dan toleransi stale. Bila seluruh provider gagal, exit indikator dijeda sementara OOR tetap dipantau.
+Candle hanya dipakai untuk harga historis dan audit jurnal; tidak ada evaluasi indikator atau timer polling candle untuk exit.
 
 ### `candles.providers`
 
@@ -225,72 +256,20 @@ Candle hanya dipakai jika final dan masih cukup baru. Batas umur mencakup durasi
 | `onchain_ticks.enabled` | `true` | Adapter on-chain ticks belum tersedia. | Belum aktif |
 | `onchain_ticks.sol_usd_source` | `"jupiter"` | Sumber konversi yang direncanakan; belum dibaca runtime. | Belum aktif |
 
-### `indicator_exit`
+### `automation`
 
-| Parameter | Default | Fungsi dan batas nilai | Ubah |
-| --- | --- | --- | --- |
-| `enabled` | `true` | Aktifkan evaluasi exit indikator. | T |
-| `timeframe` | `"15m"` | `5m`, `15m`, `30m`, atau `1h`; override per pool mengungguli nilai global. | T; `/tf` untuk pilihan efektif |
-| `min_age_candles` | `1` | Umur minimum posisi sebelum eligible exit indikator, dihitung dalam durasi timeframe sejak mulai dipantau; integer ≥ 0. | T |
-| `rule.rsi_required` | `true` | Wajibkan RSI mencapai ambang di samping konfirmasi lain. | T |
-| `rule.confirmations_any_of` | `["bb_breakout","macd_first_green"]` | Minimal satu konfirmasi harus terpenuhi; array tidak kosong dari kedua nama ini. | T |
+| Parameter | Default | Batas / perilaku |
+| --- | --- | --- |
+| `enabled` | `false` | Aktifkan hanya dalam DRY-RUN, dengan swap aktif. |
+| `max_positions` | `15` | Integer 1–15, termasuk semua posisi nyata/manual dan reservasi/posisi virtual. |
+| `position_sol` | `0.5` | Modal SOL per entry; rent refundable dan gas tambahan. |
+| `min_bin_step` | `80` | Integer ≥80. |
+| `min_price_percent` | `-80` | Range SPOT dari persentase ini hingga 0%; dibulatkan ke bin terdekat di dalam batas, satu posisi extended. |
+| `profit_percent` | `5` | Close jika profit neto SOL ≥ ambang. |
+| `oor_above_percent` | `10` | Close jika harga ≥110% dari batas atas. |
+| `oor_below_percent` | `30` | Close loss jika harga ≤70% dari batas bawah; blokir mint sampai diaktifkan manual. |
 
-`bb_breakout`: penutupan di atas BB atas. `macd_first_green`: histogram MACD berubah dari ≤ 0 ke > 0. Jika RSI diwajibkan, RSI juga harus > `overbought` (tepat pada ambang belum memenuhi). Evaluasi memerlukan setidaknya 35 candle dan data indikator yang cukup.
-
-### `indicator_exit.indicators`
-
-| Parameter | Default | Fungsi dan batas nilai | Ubah |
-| --- | --- | --- | --- |
-| `rsi.period` | `2` | Periode RSI Wilder; integer ≥ 1 candle. | T |
-| `rsi.overbought` | `90` | Ambang RSI; angka 0–100. | T |
-| `bb.period` | `20` | Periode Bollinger Bands; integer ≥ 2 candle. | T |
-| `bb.std_dev` | `2` | Pengali standar deviasi BB; angka ≥ 0. | T |
-| `macd.fast` | `12` | Periode EMA cepat; integer ≥ 1 dan < `slow`. | T |
-| `macd.slow` | `26` | Periode EMA lambat; integer ≥ 2. | T |
-| `macd.signal` | `9` | Periode EMA signal; integer ≥ 1. | T |
-
-### `oor_exit`
-
-| Parameter | Default | Fungsi dan batas nilai | Ubah |
-| --- | --- | --- | --- |
-| `evaluation` | `"live"` | Evaluasi bin secara langsung; hanya `live` didukung. Ini bukan aktivasi transaksi LIVE. | F |
-| `below.enabled` | `true` | Aktifkan exit jika bin aktif melewati batas bawah. | T |
-| `below.trigger_bins` | `20` | Jarak minimal di bawah batas bawah; integer ≥ 1 bin. | T |
-| `below.confirm_sec` | `5` | Kondisi bawah harus bertahan terus selama nilai ini; angka ≥ 0 detik, `0` langsung. | T |
-| `above.enabled` | `true` | Aktifkan exit jika bin aktif melewati batas atas. | T |
-| `above.trigger_bins` | `20` | Jarak minimal di atas batas atas; integer ≥ 1 bin. | T |
-| `above.confirm_sec` | `30` | Kondisi atas harus bertahan terus; angka ≥ 0 detik. | T |
-
-Konfirmasi direset bila kondisi ambang tidak lagi terpenuhi. Bin step berbeda menghasilkan jarak harga berbeda untuk jumlah bin yang sama; ambang exit ini tetap memakai bin, bukan persen OOR di UI.
-
-### `pool_overrides`
-
-Default **`{}`**: semua pool memakai konfigurasi global. Key adalah alamat pool. Field yang tidak dicantumkan mewarisi nilai global.
-
-| Parameter di bawah `pool_overrides.<pool>` | Default | Fungsi / nilai | Ubah |
-| --- | --- | --- | --- |
-| `indicator_exit.timeframe` | Global `"15m"` | Timeframe khusus pool: `5m`, `15m`, `30m`, `1h`. | T |
-| `oor_exit.below.enabled` | Global `true` | Aktifkan/nonaktifkan exit bawah pool. | T |
-| `oor_exit.below.trigger_bins` | Global `20` | Integer ≥ 1 bin. | T |
-| `oor_exit.below.confirm_sec` | Global `5` | Angka ≥ 0 detik. | T |
-| `oor_exit.above.enabled` | Global `true` | Aktifkan/nonaktifkan exit atas pool. | T |
-| `oor_exit.above.trigger_bins` | Global `20` | Integer ≥ 1 bin. | T |
-| `oor_exit.above.confirm_sec` | Global `30` | Angka ≥ 0 detik. | T |
-
-Contoh blok dalam `config.json`; ganti `<ALAMAT_POOL>` dengan alamat sebenarnya:
-
-```json
-{
-  "pool_overrides": {
-    "<ALAMAT_POOL>": {
-      "indicator_exit": { "timeframe": "5m" },
-      "oor_exit": { "below": { "trigger_bins": 28 } }
-    }
-  }
-}
-```
-
-Melalui Telegram: `/config set pool_overrides.<ALAMAT_POOL>.oor_exit.below.trigger_bins 28`. Override belum memiliki menu tombol tersendiri. `/tf` tidak mengubah override pool.
+Semua parameter ini dapat diedit melalui Telegram tanpa restart. Blok lama `indicator_exit`, `oor_exit`, `pool_overrides`, `mode.shadow_candles`, polling candle, dan context candle dibuang oleh parser. `/tf` serta tombol lama hanya memberi pemberitahuan penghapusan.
 
 ### `execution`
 
@@ -309,27 +288,11 @@ Satu lamport = 1.000.000 micro-lamport; satu SOL = 1.000.000.000 lamport. Total 
 | --- | --- | --- | --- |
 | `enabled` | `true` | Swap token hasil close ke SOL; memerlukan API key Jupiter. | T |
 | `output` | `"SOL"` | Hanya output SOL didukung. | F |
-| `min_value_usd` | `0.5` | Nilai minimum token untuk swap; angka ≥ 0 USD. | T |
+| `min_value_usd` | `0.2` | Nilai minimum token untuk swap; angka ≥ 0,20 USD. | T |
 | `slippage_bps` | `500` | Slippage awal; integer ≥ 1 bps, `500 bps = 5%`. | T |
 | `max_slippage_bps` | `1500` | Cap slippage; integer ≥ slippage awal dan ≤ 10000; default 15%. Retry menaikkan 250 bps per percobaan hingga cap. | T |
 | `max_retries` | `3` | Batas total percobaan swap; integer 1–3. | T |
 | `close_empty_token_account` | `false` | Penutupan akun token kosong belum tersedia; `true` ditolak. | F |
-
-### `top_trending`
-
-| Parameter | Default | Fungsi dan batas nilai | Ubah |
-| --- | --- | --- | --- |
-| `enabled` | `true` | Aktifkan fitur ranking baca-saja; memerlukan API key Jupiter. | T |
-| `limit` | `10` | Jumlah hasil; integer 1–100. | T |
-| `min_market_cap_usd` | `500000` | Minimum kapitalisasi pasar, angka ≥ 0 USD. | T |
-| `min_token_age_hours` | `6` | Umur token minimum, angka ≥ 0 jam. | T |
-| `max_token_age_days` | `60` | Umur token maksimum, angka ≥ 0 hari; tidak boleh di bawah umur minimum. | T |
-| `min_holders` | `1000` | Minimum holder; integer ≥ 0. | T |
-| `min_tvl_usd` | `10000` | Minimum TVL pool, angka ≥ 0 USD. | T |
-| `min_organic_score` | `70` | Minimum Organic Score, angka 0–100. | T |
-| `volume_window` | `"24h"` | Urut volume `4h`, `12h`, atau `24h`; tidak tersedia pilihan `6h`. | T |
-
-Hasil menggunakan pool token/SOL; fitur ini tidak membuka posisi atau menjalankan transaksi.
 
 ### `top_careless`
 
@@ -337,7 +300,7 @@ Hasil menggunakan pool token/SOL; fitur ini tidak membuka posisi atau menjalanka
 | --- | --- | --- | --- |
 | `enabled` | `true` | Aktifkan screening Top Careless Strat; memerlukan API key Jupiter. | T |
 | `limit` | `10` | Jumlah pool hasil; integer 1–100. | T |
-| `min_market_cap_usd` | `1000000` | Minimum market cap token; angka ≥ 0 USD. | T |
+| `min_market_cap_usd` | `1500000` | Minimum market cap token; angka ≥ 0 USD. | T |
 | `min_token_age_days` | `3` | Umur minimum berdasarkan first pool Jupiter; angka ≥ 0 hari. | T |
 | `min_tvl_usd` | `5000` | Minimum TVL pool; angka ≥ 0 USD. | T |
 
@@ -369,7 +332,6 @@ Hasil menggunakan pool token/SOL; fitur ini tidak membuka posisi atau menjalanka
 | `snapshot_interval_sec` | `300` | Interval snapshot posisi on-chain; integer ≥ 1 detik. | T+R |
 | `snapshot_retention_days` | `180` | Retensi snapshot posisi; integer ≥ 1 hari. | T |
 | `candle_audit_retention_days` | `60` | Retensi baris candle; integer ≥ 1 hari. Saat ini tidak menghapus tabel sinyal/audit. | F |
-| `context_candles` | `50` | Jumlah candle konteks jurnal exit; integer ≥ 1. | T |
 | `post_exit_marks_min` | `[15,60,240,1440]` | Offset pemantauan harga setelah exit, dalam menit; setiap elemen integer > 0. | F |
 | `csv_export.enabled` | `true` | Export CSV otomatis; `/export` tetap tersedia untuk permintaan manual. | T |
 | `csv_export.dir` | `"./exports"` | Direktori export; harus berada di dalam direktori proyek. | F |
@@ -390,7 +352,8 @@ Data harga setelah exit memerlukan harga exit USD yang tersedia dan seri candle 
 ## Keamanan dan mode LIVE
 
 - Simpan credential di `.env`, bukan di URL konfigurasi, Telegram, atau commit Git. `.env` dan konfigurasi diperketat ke permission `600` saat startup; keypair juga wajib `600` dan berada di luar repository.
-- Untuk LIVE, atur `AGENT_KEYPAIR_PATH`, restart, kirim `/golive`, lalu tekan tombol konfirmasi. Signer harus cocok dengan `AGENT_WALLET_PUBKEY`; tersedia waktu konfirmasi dua menit.
+- Otomatisasi rilis ini hanya dry-run. `/golive` dan konfirmasinya ditolak saat otomatisasi aktif; startup juga menolak mode SQLite LIVE. Tidak ada implementasi entry LIVE.
+- Untuk fitur eksekusi LIVE yang sudah ada, nonaktifkan otomatisasi lalu atur `AGENT_KEYPAIR_PATH`, restart, kirim `/golive`, lalu tekan tombol konfirmasi. Signer harus cocok dengan `AGENT_WALLET_PUBKEY`; tersedia waktu konfirmasi dua menit.
 - Mode tersimpan di SQLite dan dapat tetap LIVE setelah restart meskipun file contoh memakai `dry_run: true`. Selalu periksa `/status`; tidak ada command `/godryrun` saat ini.
 - Close dan swap LIVE disimulasikan sebelum broadcast. Build Jupiter diperiksa terhadap mint, jumlah, slippage, router, signer, akun token milik wallet, dan cleanup wrapped SOL. Layout instruksi tidak didukung ditolak.
 - Broadcast tidak pasti tidak diulang otomatis. Metadata saldo yang belum tersedia direkonsiliasi dengan status `WAITING_METADATA`; `/retryswap` menolak hasil sukses atau percobaan yang belum terselesaikan.
@@ -402,18 +365,15 @@ Detail arsitektur: [ARCHITECTURE.md](ARCHITECTURE.md). Persyaratan keamanan: [PR
 
 | Gejala / batasan | Penjelasan dan tindakan |
 | --- | --- |
-| `Missing required environment variable` | Isi variabel wajib pada `.env`, lalu restart. API key Jupiter diperlukan jika swap, trending, atau careless aktif. |
+| `Missing required environment variable` | Isi variabel wajib pada `.env`, lalu restart. API key Jupiter diperlukan jika swap atau careless aktif. |
 | Bot tidak merespons | Periksa token, ID chat/pengirim, akses jaringan, dan `pm2 logs yolow`. Pastikan hanya satu instance melakukan polling. |
 | Menu command tidak muncul | Registrasi menu memakai Telegram dan tidak menambah RPC Helius. Jika setup gagal, `/help` tetap tersedia; restart untuk mencoba lagi. Tombol menu native hanya dipasang pada chat pribadi. |
 | Posisi baru belum terlihat | Discovery default 300 detik. Periksa wallet dan kegagalan pemindaian sebelum mengubah interval. |
 | PnL kosong / refresh gagal | Indeks Meteora dapat tertinggal; cache lama dipertahankan dengan peringatan. Tidak ada fallback RPC untuk PnL. |
 | Notifikasi profit tidak muncul | Harus ada PnL SOL positif dan persen **> ambang**, data fetch ≤ 2 menit tanpa error, fitur aktif, dan interval telah lewat. Tidak dikirim langsung saat startup. |
-| Exit indikator berhenti | Periksa kecukupan/finalitas candle dan provider. Candle GMGN serta `onchain_ticks` belum terintegrasi; fallback berlanjut ke provider yang didukung. |
-| Harga candle berbeda dari chart | Unit harga Meteora perlu dicocokkan dengan sumber chart sebelum mengandalkan exit LIVE; default tetap DRY-RUN. |
 | HTTP 429 / penggunaan Helius tinggi | Jumlah pool, reconnect, snapshot, dan transaksi memengaruhi kuota. Default discovery/snapshot 300 detik mengurangi request; tidak menjamin batas kredit bulanan. GeckoTerminal diserialkan dan tetap dapat terkena cache/rate limit. |
 | OOR terlambat saat feed terganggu | WebSocket dipakai untuk pool terpantau; fallback membaca satu akun pool per interval, default 15 detik. |
-| ATH MarketCap `N/A` | API key GMGN atau data token yang cocok tidak tersedia. |
-| Edit file tidak mengubah perilaku | Restart setelah edit file; nilai mode/timeframe di SQLite dan override pool dapat mengungguli nilai global. |
+| Edit file tidak mengubah perilaku | Restart setelah edit file; mode di SQLite dapat mengungguli mode dalam file. |
 | Bot mati setelah reboot host | `pm2 save` bukan autostart; pasang startup service yang didukung atau jalankan `pm2 resurrect`. |
 
 Struktur utama: `src/` untuk agent dan fitur, `test/` untuk pengujian, `data/` untuk SQLite, `exports/` dan `backups/` untuk hasil lokal. Jangan commit credential, keypair, database, export, atau backup.

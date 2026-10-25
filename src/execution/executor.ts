@@ -11,7 +11,7 @@ import {
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppConfig } from "../config/config.ts";
-import type { Position, Timeframe, Trigger } from "../domain/types.ts";
+import type { Position, Trigger } from "../domain/types.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { getMeta, setMeta } from "../storage/db.ts";
 import { discoverPositions, listPositions } from "../positions/monitor.ts";
@@ -19,7 +19,6 @@ import { persistTradeCsv } from "../journal/export.ts";
 import { join } from "node:path";
 import { readJsonResponse, safeError } from "../security.ts";
 import { notificationCard, triggerReasonLabel } from "../telegram/presentation.ts";
-import { assertFreshCandle } from "../market-data/candles.ts";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -206,7 +205,7 @@ export class CloseExecutor {
       this.options.db.prepare(`UPDATE trade_history SET exit_at=?,trigger_reason=?,trigger_detail=?,close_signature=?,sol_received=?,tokens_received=?,
         network_fees_sol=?,duration_sec=?,time_in_range_pct=?,mfe_sol=?,mae_sol=?,max_drawdown_pct=?,max_active_bin=?,min_active_bin=?,range_exit_count=?,
         total_sol_returned=?,finalized_at=NULL WHERE position_id=?`)
-        .run(closedAt, trigger?.reason ?? "INDICATOR", trigger ? JSON.stringify(trigger.detail) : "{}", signature,
+        .run(closedAt, trigger?.reason ?? "LEGACY_RECOVERY", trigger ? JSON.stringify(trigger.detail) : "{}", signature,
           Number(solAmount) / 1e9, token.toString(), Number(fees) / 1e9, metrics.duration, metrics.inRangePct,
           metrics.mfe, metrics.mae, metrics.maxDrawdown, metrics.maxActiveBin, metrics.minActiveBin,
           metrics.rangeExits, Number(solAmount) / 1e9, position.id);
@@ -221,12 +220,12 @@ export class CloseExecutor {
       const tokenAmount = BigInt(result.token_received ?? "0");
       const metrics = this.positionMetrics(position.id, closedAt);
       const detail = trigger ? JSON.stringify(trigger.detail) : "{}";
-      const exitPrice = trigger?.reason === "INDICATOR" && trigger.detail.unit === "usd" && typeof trigger.detail.close === "number"
+      const exitPrice = trigger?.detail.unit === "usd" && typeof trigger.detail.close === "number"
         ? trigger.detail.close : null;
       this.options.db.prepare(`UPDATE trade_history SET exit_at=?,trigger_reason=?,trigger_detail=?,close_signature=?,sol_received=?,tokens_received=?,
         exit_price_usd=?,network_fees_sol=COALESCE(network_fees_sol,0),duration_sec=?,time_in_range_pct=?,mfe_sol=?,mae_sol=?,max_drawdown_pct=?,
         max_active_bin=?,min_active_bin=?,range_exit_count=?,total_sol_returned=? WHERE position_id=?`)
-        .run(closedAt, trigger?.reason ?? "INDICATOR", detail, result.signature, solAmount, tokenAmount.toString(), exitPrice,
+        .run(closedAt, trigger?.reason ?? "LEGACY_RECOVERY", detail, result.signature, solAmount, tokenAmount.toString(), exitPrice,
           metrics.duration, metrics.inRangePct, metrics.mfe, metrics.mae, metrics.maxDrawdown, metrics.maxActiveBin,
           metrics.minActiveBin, metrics.rangeExits, solAmount, position.id);
       const tradeId = trade.trade_id as number;
@@ -283,10 +282,9 @@ export class CloseExecutor {
   }
 
   private assertFreshTrigger(trigger: Trigger): void {
-    if (trigger.reason !== "INDICATOR") return;
-    const timeframe = trigger.detail.timeframe as Timeframe;
-    try { assertFreshCandle(Number(trigger.detail.candleTime), timeframe, this.options.config.candles); }
-    catch (error) { throw new SkipClose(safeError(error), "STALE_CANDLE"); }
+    if (!["TAKE_PROFIT", "OOR_BELOW_PERCENT", "OOR_ABOVE_PERCENT"].includes(trigger.reason)) throw new SkipClose("Strategi exit lama sudah dihapus", "RETIRED_TRIGGER");
+    const at = Number(trigger.detail.snapshotAt);
+    if (!Number.isSafeInteger(at) || at > Date.now() || Date.now() - at > 120_000) throw new SkipClose("Data harga/PnL kedaluwarsa", "STALE_PRICE");
   }
 
   private promoteTrade(positionId: string): void {
@@ -431,7 +429,7 @@ export class CloseExecutor {
       this.markTrigger(trigger, "CIRCUIT_BREAKER");
       return Math.max(1, 600_000 - (Date.now() - failureAt));
     }
-    if (trigger.reason !== "INDICATOR" && !(await this.recheckOor(position, trigger))) {
+    if (trigger.reason !== "TAKE_PROFIT" && !(await this.recheckOor(position, trigger))) {
       this.markTrigger(trigger, "OOR_RESET");
       return 0;
     }
@@ -513,7 +511,7 @@ export class CloseExecutor {
       max_active_bin=?,min_active_bin=?,range_exit_count=?,total_sol_returned=?,pnl_reason=CASE WHEN initial_sol_capital IS NULL THEN 'initial capital unavailable' ELSE 'estimated from first-seen snapshot' END,
       finalized_at=? WHERE position_id=?`)
       .run(closedAt, trigger.reason, JSON.stringify(trigger.detail), sent.at(-1) ?? null, closeSol, tokenReceived.toString(),
-        trigger.reason === "INDICATOR" && trigger.detail.unit === "usd" && typeof trigger.detail.close === "number" ? trigger.detail.close : null,
+        trigger.detail.unit === "usd" && typeof trigger.detail.close === "number" ? trigger.detail.close : null,
         typeof trigger.detail.activeBin === "number" ? trigger.detail.activeBin : position.activeBin ?? null,
         networkFees, metrics.duration, metrics.inRangePct, metrics.mfe, metrics.mae, metrics.maxDrawdown,
         metrics.maxActiveBin, metrics.minActiveBin, metrics.rangeExits, closeSol,
@@ -521,22 +519,7 @@ export class CloseExecutor {
     this.updatePnl(position.id);
     const tradeId = (this.options.db.prepare("SELECT trade_id FROM trade_history WHERE position_id=?").get(position.id) as { trade_id: number } | undefined)?.trade_id;
     if (tradeId !== undefined) {
-      const timeframe = this.options.config.pool_overrides[position.pool]?.indicator_exit?.timeframe
-        ?? getMeta(this.options.db, "active_timeframe") ?? this.options.config.indicator_exit.timeframe;
-      const unit = trigger.detail.unit === "sol" || trigger.detail.unit === "usd" ? trigger.detail.unit : this.options.config.candles.price_unit;
-      const latestProvider = this.options.db.prepare(`SELECT provider FROM candles
-        WHERE asset_key=? AND timeframe=? AND unit=? ORDER BY open_time DESC LIMIT 1`).get(position.pool, timeframe, unit) as { provider: string } | undefined;
-      const provider = typeof trigger.detail.provider === "string" ? trigger.detail.provider : latestProvider?.provider;
-      const context = this.options.db.prepare(`SELECT c.provider,c.open_time,c.timeframe,c.unit,c.open,c.high,c.low,c.close,c.volume,
-        s.rsi,s.bb_upper,s.macd_hist FROM candles c LEFT JOIN signals s ON s.asset_key=c.asset_key AND s.provider=c.provider
-          AND s.timeframe=c.timeframe AND s.unit=c.unit AND s.candle_time=c.open_time
-        WHERE c.asset_key=? AND c.timeframe=? AND c.unit=? AND c.provider=? ORDER BY c.open_time DESC LIMIT ?`)
-        .all(position.pool, timeframe, unit, provider ?? "", this.options.config.history.context_candles) as Array<Record<string, any>>;
-      const saveContext = this.options.db.prepare(`INSERT OR IGNORE INTO trade_candles
-        (trade_id,candle_time,provider,timeframe,unit,open,high,low,close,volume,rsi,bb_upper,macd_hist) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-      for (const candle of context.reverse()) saveContext.run(tradeId, candle.open_time, candle.provider, candle.timeframe, candle.unit,
-        candle.open, candle.high, candle.low, candle.close, candle.volume, candle.rsi, candle.bb_upper, candle.macd_hist);
-      const priceAvailable = trigger.reason === "INDICATOR" && trigger.detail.unit === "usd" && typeof trigger.detail.close === "number";
+      const priceAvailable = trigger.detail.unit === "usd" && typeof trigger.detail.close === "number";
       const marks = this.options.db.prepare(`INSERT OR IGNORE INTO post_exit_marks(trade_id,offset_min,due_at,status,reason)
         VALUES(?,?,?, ?,?)`);
       for (const offset of this.options.config.history.post_exit_marks_min as number[]) {
@@ -584,11 +567,12 @@ export class CloseExecutor {
     if (position.ignored) return false;
     const pool = await DLMM.create(this.options.connection, new PublicKey(position.pool), { cluster: "mainnet-beta" });
     const activeBin = (await pool.getActiveBin()).binId;
-    const side = trigger.reason === "OOR_BELOW" ? "below" : "above";
-    const setting = { ...this.options.config.oor_exit[side], ...this.options.config.pool_overrides[position.pool]?.oor_exit?.[side] };
-    if (!setting.enabled) return false;
-    const distance = trigger.reason === "OOR_BELOW" ? position.lowerBinId - activeBin : activeBin - position.upperBinId;
-    return distance >= setting.trigger_bins;
+    const solIsX = pool.tokenX.mint.address.toBase58() === SOL_MINT;
+    const boundary = trigger.reason === "OOR_BELOW_PERCENT"
+      ? (solIsX ? position.upperBinId : position.lowerBinId) : (solIsX ? position.lowerBinId : position.upperBinId);
+    const ratio = Math.exp((solIsX ? -1 : 1) * (activeBin - boundary) * Math.log1p(pool.lbPair.binStep / 10_000));
+    return trigger.reason === "OOR_BELOW_PERCENT" ? ratio <= 1 - this.options.config.automation.oor_below_percent / 100
+      : ratio >= 1 + this.options.config.automation.oor_above_percent / 100;
   }
 
   private async addPriorityFee(tx: Transaction): Promise<void> {

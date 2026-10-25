@@ -45,6 +45,7 @@ test("profit reminders repeat on schedule, filter fresh open profits, and hot ap
     deposits: 1, withdrawals: 0, claimed: 0, updatedAt: 1,
   }]));
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const noRpc = new Proxy({}, { get() { throw new Error("No RPC"); } }) as any;
   const agent = new YolowAgent({ db, config, connection: noRpc, wallet: new PublicKey(wallet), telegramToken: "123456:test-token", chatId: "1" });
   let result: any;
@@ -130,6 +131,7 @@ test("profit summaries split long lists without dropping positions and cancel cl
   const ids = Array.from({ length: 80 }, (_, i) => new PublicKey(Buffer.alloc(32, i + 80)).toBase58());
   for (const address of ids) insertPosition(db, address);
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const agent = new YolowAgent({ db, config, connection: {} as any, wallet: new PublicKey(wallet), telegramToken: "123456:test-token", chatId: "1", jupiterApiKey: "test-key" });
   t.mock.method(agent.pnl, "refresh", async () => new Map([[pool, { fetchedAt: now, positions: new Map(ids.map((address) => [address, {
     id: address, pnl: 1, percent: 6, deposits: 1, withdrawals: 0, claimed: 0, updatedAt: null,
@@ -246,6 +248,7 @@ test("Telegram PnL command and Refresh show lifetime SOL values without any RPC 
   t.after(() => db.close());
   insertPosition(db);
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   t.mock.method(globalThis, "fetch", async () => payload());
   const connection = new Proxy({}, { get() { throw new Error("PnL must not access Helius"); } });
   const handler = createCommandHandler({
@@ -278,6 +281,7 @@ test("combined positions sort profits first, paginate five cards, and keep unkno
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => { calls++; return payload(values.map((value, i) => position({ positionAddress: ids[i], pnlSol: value, pnlSolPctChange: value }))); });
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const handler = createCommandHandler({ db, config, connection: new Proxy({}, { get() { throw new Error("No RPC"); } }) as any,
     wallet: new PublicKey(wallet), telegramToken: "test", chatId: "1", agent: { pnl: new PositionPnlMonitor(wallet, "https://dlmm.datapi.meteora.ag") } as any });
   const first = (await handler.onCommand("/positions", []))!;
@@ -319,6 +323,7 @@ test("position details preserve all pool caches and update only the selected exi
   const monitor = new PositionPnlMonitor(wallet, "https://dlmm.datapi.meteora.ag");
   const tracker = t.mock.method(monitor, "refresh");
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const handler = createCommandHandler({ db, config, connection: {} as any, wallet: new PublicKey(wallet), telegramToken: "test", chatId: "1", agent: { pnl: monitor } as any });
   await handler.onCommand("/positions", []);
   const detail = (await handler.onCallback(`position:view:${id}`))!;
@@ -346,6 +351,7 @@ test("combined view labels cached, stale, and unavailable PnL without treating m
   t.mock.method(globalThis, "fetch", async () => ++calls === 1 ? payload() : new Response("offline", { status: 500 }));
   const monitor = new PositionPnlMonitor(wallet, "https://dlmm.datapi.meteora.ag");
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const options = { db, config, connection: {} as any, wallet: new PublicKey(wallet), telegramToken: "test", chatId: "1" };
   const handler = createCommandHandler({ ...options, agent: { pnl: monitor } as any });
   const first = (await handler.onCommand("/positions", []))!;
@@ -369,6 +375,7 @@ test("position view handles empty lists, closed positions, and invalid page call
   const db = openDatabase(":memory:");
   t.after(() => db.close());
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const handler = createCommandHandler({ db, config, connection: {} as any, wallet: new PublicKey(wallet), telegramToken: "test", chatId: "1",
     agent: { pnl: { refresh: () => { throw new Error("No fetch for empty positions"); } } } as any });
   assert.match((await handler.onCommand("/positions", []))!.text, /Belum ada posisi terbuka/);
@@ -386,6 +393,7 @@ test("position HTML escapes token names and provider errors and stays in one edi
   for (const address of ids) insertPosition(db, address);
   db.prepare("UPDATE positions SET active_bin=upper_bin_id+1,bin_step=0.1").run();
   const config = parseConfig(await readFile("config.example.json", "utf8"));
+  config.automation.enabled = true;
   const mint = "DEW9dSN6QpWyNthphCpMmAbZP1Q4cEKR9xQXAri98WDP";
   t.mock.method(globalThis, "fetch", async () => Response.json([{ id: mint, symbol: "<".repeat(16), name: "&".repeat(32) }]));
   const cache = new Map([[pool, { fetchedAt: Date.now(), error: "&".repeat(500), positions: new Map(ids.map((address) => [address, {
@@ -415,7 +423,6 @@ test("OOR fallback reads one account per pool every 15 seconds and rejects stale
   let calls = 0;
   let activeId: unknown = 5;
   let fails = false;
-  let triggers = 0;
   t.mock.method(Date, "now", () => now);
   const monitor = new ActiveBinMonitor({
     db, connection: { _rpcWebSocketConnected: false, getAccountInfo: async () => {
@@ -423,12 +430,10 @@ test("OOR fallback reads one account per pool every 15 seconds and rejects stale
       if (fails) throw new Error("offline");
       return { data: Buffer.alloc(0) };
     } } as any,
-    fallbackPollMs: 15_000, below: { enabled: true, trigger_bins: 1, confirm_sec: 0 },
-    above: { enabled: true, trigger_bins: 1, confirm_sec: 0 }, poolOverrides: {},
-    onTrigger: async () => { triggers++; return 0; },
+    fallbackPollMs: 15_000,
   });
   const state = {
-    client: { program: { coder: { accounts: { decode: () => ({ activeId }) } } }, getActiveBin: () => { throw new Error("Expensive bin fetch"); } },
+    client: { lbPair: { binStep: 80 }, tokenX: { mint: { address: new PublicKey(sol) } }, program: { coder: { accounts: { decode: () => ({ activeId }) } } }, getActiveBin: () => { throw new Error("Expensive bin fetch"); } },
     activeBin: 5, lastUpdate: now, lastPollAt: 0, storedBin: 5, storedAt: now,
   };
   (monitor as any).pools.set(pool, state);
@@ -447,10 +452,10 @@ test("OOR fallback reads one account per pool every 15 seconds and rejects stale
   state.activeBin = 20;
   now += 16_000;
   await (monitor as any).tick();
-  assert.equal(triggers, 0);
+  assert.equal(monitor.latest(pool), undefined);
   fails = false;
   activeId = 20;
   now += 15_000;
   await (monitor as any).tick();
-  assert.equal(triggers, 2);
+  assert.equal(monitor.latest(pool)?.active, 20);
 });

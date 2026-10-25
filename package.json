@@ -7,12 +7,13 @@
   },
   "scripts": {
     "start": "node --env-file=.env --experimental-transform-types src/main.ts",
-    "test": "node --experimental-transform-types --test test/top-trending.test.ts test/top-careless.test.ts test/bot.test.ts test/agent-logic.test.ts test/config.test.ts test/pnl.test.ts test/security.test.ts test/execution-security.test.ts"
+    "test": "node --experimental-transform-types --test test/automation.test.ts test/top-careless.test.ts test/bot.test.ts test/agent-logic.test.ts test/config.test.ts test/pnl.test.ts test/security.test.ts test/execution-security.test.ts"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "1.9.8",
     "@solana/web3.js": "1.98.4",
     "bn.js": "5.2.2",
-    "bs58": "4.0.1"
+    "bs58": "4.0.1",
+    "@solana/spl-token": "0.4.15"
   }
 }

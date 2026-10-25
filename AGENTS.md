@@ -19,6 +19,8 @@ Use Node.js 22.21.0 or newer.
 - `node --experimental-transform-types test/execution-security.test.ts`: run execution security tests directly.
 - `pm2 start ecosystem.config.cjs`: start the managed application.
 
+After completing changes and passing the relevant tests, always restart Yolow with `pm2 restart yolow` and verify its process status and startup logs. Restart only the Yolow process.
+
 There is no separate build step or configured linting command.
 
 ## Coding Style & Naming Conventions

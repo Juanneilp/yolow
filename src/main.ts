@@ -45,8 +45,8 @@ if (telegramUserId && !/^\d+$/.test(telegramUserId)) throw new Error("TELEGRAM_U
 const heliusKey = requiredEnv("HELIUS_API_KEY");
 const wallet = new PublicKey(requiredEnv("AGENT_WALLET_PUBKEY"));
 const jupiterApiKey = process.env.JUPITER_API_KEY?.trim();
-if ((config.swap.enabled || config.top_trending.enabled || config.top_careless.enabled) && !jupiterApiKey) {
-  throw new Error("JUPITER_API_KEY is required when swaps, Top Trending, or Top Careless Strat are enabled");
+if ((config.swap.enabled || config.top_careless.enabled || config.automation.enabled) && !jupiterApiKey) {
+  throw new Error("JUPITER_API_KEY is required when swaps or Top Careless Strat are enabled");
 }
 
 function addApiKey(endpoint: string): string {
@@ -66,6 +66,7 @@ const agent = new YolowAgent({
 
 const storedDryRun = getMeta(db, "dry_run");
 const startupDryRun = storedDryRun === undefined ? config.mode.dry_run : storedDryRun !== "false";
+if (config.automation.enabled && !startupDryRun) throw new Error("Automation requires persisted DRY-RUN mode; LIVE startup refused");
 if (!startupDryRun) {
   if (!keypairPath) throw new Error("AGENT_KEYPAIR_PATH is required when mode.dry_run is false");
   agent.executor.setSigner(await loadSigner(keypairPath, wallet));
@@ -89,10 +90,6 @@ const commandHandler = createCommandHandler({
 });
 await runBot({
   token: telegramToken, chatId, userId: telegramUserId || chatId,
-  config: config.top_trending, trendingEnabled: () => config.top_trending.enabled,
-  jupiterApiKey: jupiterApiKey ?? "", gmgnApiKey: process.env.GMGN_API_KEY?.trim(),
-  meteoraBaseUrl: config.candles.providers.meteora?.base_url,
-  jupiterTokensBaseUrl: config.jupiter.tokens_base_url,
   onCommand: commandHandler.onCommand,
   onCallback: commandHandler.onCallback,
   onText: commandHandler.onText,
