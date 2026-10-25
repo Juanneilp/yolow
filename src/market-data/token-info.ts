@@ -5,6 +5,8 @@ export type TokenInfo = { name?: string; symbol?: string };
 type JupiterToken = TokenInfo & { id?: string };
 const cache = new Map<string, TokenInfo | null>();
 
+export function cachedTokenInfo(mint: string): TokenInfo | undefined { return cache.get(mint) ?? undefined; }
+
 function clean(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const result = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);

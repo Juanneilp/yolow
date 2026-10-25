@@ -6,7 +6,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfig } from "./config/config.ts";
 import { fetchCandleAt } from "./market-data/candles.ts";
-import { readJsonResponse, safeError, telegramApiBase } from "./security.ts";
+import { safeError } from "./security.ts";
 import { ActiveBinMonitor } from "./market-data/active-bin.ts";
 import { listPositions } from "./positions/monitor.ts";
 import { PositionPnlMonitor } from "./positions/pnl.ts";
@@ -15,7 +15,9 @@ import { getMeta, setMeta } from "./storage/db.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { persistTradeCsv } from "./journal/export.ts";
 import { fetchTokenInfo, tokenLabel } from "./market-data/token-info.ts";
-import { binStepLabel, notificationCard } from "./telegram/presentation.ts";
+import { notificationCard, notificationSol, notificationPercent, type NotificationDetail, type NotificationCardOptions } from "./telegram/presentation.ts";
+
+import { sendTelegramMessage, type Notification } from "./telegram/client.ts";
 
 type Options = {
   connection: Connection;
@@ -77,10 +79,10 @@ export class YolowAgent {
             join(this.options.config.history.csv_export.dir, this.options.config.history.csv_export.file), this.options.config.history.post_exit_marks_min);
         } catch (error) {
           console.error("Initial trade CSV export failed:", safeError(error));
-          await this.notify(notificationCard("⚠️ EXPORT CSV GAGAL", [
+          await this.notify(this.card("⚠️ EXPORT CSV GAGAL", [
             safeError(error),
             "Yolow akan mencoba export lagi pada proses berikutnya.",
-          ]));
+          ], { action: "config" }));
         }
       });
     }
@@ -145,41 +147,38 @@ export class YolowAgent {
     if (this.stopped || !this.options.config.notify.profit_alert.enabled) return;
     const openIds = new Set(listPositions(this.options.db).map((position) => position.id));
     const short = (value: string) => `${value.slice(0, 5)}…${value.slice(-5)}`;
-    const positive = (value: number, digits: number) => `+${value < 10 ** -digits ? `<${(10 ** -digits).toFixed(digits)}` : value.toFixed(digits)}`;
     const blocks = qualifying.filter(({ position }) => openIds.has(position.id)).map(({ position, pnl, percent }) => {
       const quote = position.quoteMint === "So11111111111111111111111111111111111111112" ? "SOL" : short(position.quoteMint);
       const token = tokens.get(position.tokenMint);
-      return `${token?.symbol ?? token?.name ?? short(position.tokenMint)}/${quote} · ${short(position.id)}\n🟢 PnL ${positive(pnl, 8)} SOL (${positive(percent, 4)}%)`;
+      return `${token?.symbol ?? token?.name ?? short(position.tokenMint)}/${quote} · ${short(position.id)}\n🟢 PnL ${notificationSol(pnl, true)} (${notificationPercent(percent, true)})`;
     });
     if (!blocks.length) return;
-    const header = notificationCard("💰 POSISI PROFIT DI ATAS AMBANG", [
-      `${blocks.length} posisi · PnL > ${threshold}% · interval ${interval} menit`,
-      `🕒 ${wibStamp(now, this.options.config.timezone)} WIB`,
-    ]);
-    const footer = "Estimasi Meteora; belum dikurangi gas dan slippage.\nBuka /positions untuk detail.";
+    const title = "💰 POSISI PROFIT DI ATAS AMBANG";
+    const summary = `${blocks.length} posisi · PnL > ${notificationPercent(threshold)} · interval ${interval} menit`;
+    const footer = "Estimasi Meteora; belum dikurangi gas dan slippage.";
+    const card = (page: string[], part = "") => this.card(title, [summary, ...(part ? [part] : []), "",
+      ...page.flatMap((block, index) => [...(index ? ["", "──────────────", ""] : []), block]), "", footer], { at: now });
     const pages: string[][] = [[]];
     for (const block of blocks) {
       const page = pages[pages.length - 1];
-      if (header.length + page.join("\n\n").length + block.length + footer.length + 80 > 3500) pages.push([block]);
+      if (page.length && card([...page, block]).text.length > 3400) pages.push([block]);
       else page.push(block);
     }
     for (const [index, page] of pages.entries()) {
       if (this.stopped || !this.options.config.notify.profit_alert.enabled) return;
-      await this.notify(`${header}${pages.length > 1 ? `\nBagian ${index + 1}/${pages.length}` : ""}\n\n${page.join("\n\n")}\n\n${footer}`);
+      const message = card(page, pages.length > 1 ? `Bagian ${index + 1}/${pages.length}` : "");
+      if (index > 0) delete message.replyMarkup;
+      await this.notify(message);
     }
   }
 
-  private readonly notify = async (message: string): Promise<void> => {
-    const endpoint = `${telegramApiBase(this.options.telegramToken)}/sendMessage`;
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: this.options.chatId, text: message, disable_web_page_preview: true }), redirect: "error", signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error(`Telegram notification HTTP ${response.status}`);
-      const result = await readJsonResponse<{ ok?: boolean; description?: string }>(response, 1_000_000);
-      if (!result.ok) throw new Error(`Telegram notification failed: ${result.description ?? "unknown"}`);
-    } catch (error) { console.warn("Telegram notification failed:", safeError(error)); }
+  private card(title: string, details: NotificationDetail[], options: NotificationCardOptions = {}) {
+    return notificationCard(title, details, { mode: this.executor.isDryRun() ? "DRY-RUN" : "LIVE", timezone: this.options.config.timezone, ...options });
+  }
+
+  private readonly notify = async (message: Notification): Promise<void> => {
+    try { await sendTelegramMessage(this.options.telegramToken, this.options.chatId, message); }
+    catch (error) { console.warn("Telegram notification failed:", safeError(error)); }
   };
 
   private async discoverForEntry(): Promise<boolean> {
@@ -209,33 +208,27 @@ export class YolowAgent {
       for (const position of positions) {
         ensureTrade.run(this.executor.isDryRun() ? "dry_run" : "live", position.id, position.pool,
           position.tokenMint, position.firstSeenAt, position.firstSeenAt, position.lowerBinId, position.upperBinId, JSON.stringify(this.options.config));
-        if (!before.has(position.id)) await this.notify(notificationCard("🟢 POSISI BARU TERDETEKSI", [
-          `Token ${tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint))}`,
-          `Bin step ${binStepLabel(position.binStep, position.baseFeePercent)}`,
-          "ID posisi",
-          position.id,
-          "Pool",
-          position.pool,
-          `Range bin ${position.lowerBinId}–${position.upperBinId}`,
-          `🕒 Mulai dipantau ${wibStamp(position.firstSeenAt, this.options.config.timezone)} WIB`,
-        ]));
+        if (!before.has(position.id)) await this.notify(this.card("🟢 POSISI BARU TERDETEKSI", [
+          { label: "Asal", value: "Posisi nyata di wallet" },
+          { label: "Pemantauan", value: position.quoteMint !== "So11111111111111111111111111111111111111112" ? "Pemantauan saja · pool di luar otomatisasi SOL" : position.ignored ? "Exit diabaikan" : this.options.config.automation.enabled ? "Exit simulasi aktif" : "Otomatisasi nonaktif" },
+          { label: "Bin step", value: String(position.binStep ?? "Belum tersedia") },
+          { label: "Base fee", value: notificationPercent(position.baseFeePercent ?? null) },
+          { label: "Range bin", value: `${position.lowerBinId}–${position.upperBinId}` },
+        ], { subtitle: tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint)) + (position.quoteMint === "So11111111111111111111111111111111111111112" ? " / SOL" : " / " + position.quoteMint.slice(0, 5) + "…"),
+          positionId: position.id, pool: position.pool, at: position.firstSeenAt, detailCallback: `position:view:${position.id}` }));
       }
       for (const position of removedPositions) {
-        await this.notify(notificationCard("⚪ POSISI TIDAK LAGI DI WALLET", [
-          `Token ${tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint))}`,
-          `Bin step ${binStepLabel(position.binStep, position.baseFeePercent)}`,
-          "ID posisi",
-          position.id,
-          `Pool ${position.pool}`,
-          "Yolow menghentikan pemantauan posisi ini karena tidak menemukannya di wallet.",
-          `🕒 Diperiksa ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
-        ]));
+        await this.notify(this.card("⚪ POSISI TIDAK LAGI DI WALLET", [
+          { label: "Status", value: "Pemantauan dihentikan" },
+          "Posisi tidak ditemukan pada pemindaian wallet terbaru.",
+          "Informasi ini tidak memastikan apakah posisi ditutup atau dipindahkan.",
+        ], { subtitle: tokenLabel(position.tokenMint, tokenInfo.get(position.tokenMint)) + (position.quoteMint === "So11111111111111111111111111111111111111112" ? " / SOL" : ""),
+          positionId: position.id, pool: position.pool }));
       }
       if (getMeta(this.options.db, "position_discovery_failed") === "true") {
         setMeta(this.options.db, "position_discovery_failed", "false");
-        await this.notify(notificationCard("✅ PEMINDAIAN POSISI PULIH", [
+        await this.notify(this.card("✅ PEMINDAIAN POSISI PULIH", [
           "Yolow berhasil memperbarui daftar posisi wallet.",
-          `🕒 ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
         ]));
       }
       await this.activeBins.refreshPools();
@@ -245,11 +238,10 @@ export class YolowAgent {
       setMeta(this.options.db, "position_discovery_failed", "true");
       if (Date.now() - lastAlert >= 300_000) {
         setMeta(this.options.db, "position_discovery_alert_at", String(Date.now()));
-        await this.notify(notificationCard("⚠️ DAFTAR POSISI BELUM DIPERBARUI", [
+        await this.notify(this.card("⚠️ DAFTAR POSISI BELUM DIPERBARUI", [
           safeError(error),
           "Yolow akan mencoba kembali otomatis. Posisi yang sudah dikenal tetap tersimpan.",
-          `🕒 ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
-        ])).catch(() => undefined);
+        ], { action: "config" })).catch(() => undefined);
       }
     } finally { this.discoveryBusy = false; }
   }
@@ -314,22 +306,20 @@ export class YolowAgent {
       for (const item of backups.slice(this.options.config.history.backup.keep)) await import("node:fs/promises").then(({ unlink }) => unlink(join(directory, item.file)));
     } catch (error) {
       console.error("Database backup failed:", safeError(error));
-      await this.notify(notificationCard("🔴 BACKUP DATABASE GAGAL", [
+      await this.notify(this.card("🔴 BACKUP DATABASE GAGAL", [
         safeError(error),
         "Periksa ruang disk dan folder backup; Yolow akan mencoba lagi sesuai jadwal.",
-      ])).catch(() => undefined);
+      ], { action: "config" })).catch(() => undefined);
     }
   }
 
   private async heartbeat(): Promise<void> {
     const positions = listPositions(this.options.db);
     const balance = await this.options.connection.getBalance(this.options.wallet, "confirmed");
-    await this.notify(notificationCard("⚡ YOLOW · RINGKASAN HARIAN", [
-      `Mode ${this.executor.isDryRun() ? "🟡 DRY-RUN" : "🔴 LIVE"}`,
-      `Wallet ${this.options.wallet.toBase58()}`,
-      `Saldo ${(balance / 1e9).toFixed(4)} SOL`,
+    await this.notify(this.card("⚡ YOLOW · RINGKASAN HARIAN", [
+      { label: "Wallet", value: this.options.wallet.toBase58(), code: true },
+      { label: "Saldo", value: notificationSol(BigInt(balance)) },
       `Posisi terbuka ${positions.length} · sinyal exit dijeda ${positions.filter((item) => item.ignored).length}`,
-      `🕒 ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
     ]));
   }
 
@@ -340,19 +330,17 @@ export class YolowAgent {
       const wasLow = getMeta(this.options.db, "low_sol_balance") === "true";
       if (balance < threshold && !wasLow) {
         setMeta(this.options.db, "low_sol_balance", "true");
-        await this.notify(notificationCard("⚠️ SALDO SOL RENDAH", [
-          `Wallet ${this.options.wallet.toBase58()}`,
-          `Saldo saat ini ${(balance / 1e9).toFixed(4)} SOL`,
-          `Batas notifikasi ${this.options.config.notify.low_sol_balance_alert_sol} SOL`,
+        await this.notify(this.card("⚠️ SALDO SOL RENDAH", [
+          { label: "Wallet", value: this.options.wallet.toBase58(), code: true },
+          { label: "Saldo saat ini", value: notificationSol(BigInt(balance)) },
+          { label: "Batas notifikasi", value: notificationSol(this.options.config.notify.low_sol_balance_alert_sol) },
           "Isi saldo untuk membayar biaya transaksi bila close live diperlukan.",
-          `🕒 ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
-        ]));
+        ], { action: "config" }));
       } else if (balance >= threshold && wasLow) {
         setMeta(this.options.db, "low_sol_balance", "false");
-        await this.notify(notificationCard("✅ SALDO SOL KEMBALI NORMAL", [
-          `Saldo saat ini ${(balance / 1e9).toFixed(4)} SOL.`,
-          `🕒 ${wibStamp(Date.now(), this.options.config.timezone)} WIB`,
-        ]));
+        await this.notify(this.card("✅ SALDO SOL KEMBALI NORMAL", [
+          { label: "Saldo saat ini", value: notificationSol(BigInt(balance)) },
+        ], { action: "config" }));
       }
     } catch (error) { console.warn("SOL balance check failed:", safeError(error)); }
   }
@@ -395,10 +383,6 @@ export class YolowAgent {
     };
     schedule();
   }
-}
-
-function wibStamp(epoch: number, timezone: string): string {
-  return new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(epoch));
 }
 
 function fileStamp(epoch: number, timezone: string): string {

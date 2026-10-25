@@ -10,6 +10,7 @@ import { SOL_MINT } from "../src/positions/monitor.ts";
 import { PaperAutomation } from "../src/automation/automation.ts";
 import { AutomationMarket, paperModel, markPaper, type Market, type Snapshot } from "../src/automation/market.ts";
 import { exitReason, spotRange, swapAllowed } from "../src/automation/rules.ts";
+import type { Notification, TelegramMessage } from "../src/telegram/client.ts";
 import { createCommandHandler } from "../src/telegram/commands.ts";
 
 const key = (n: number) => new PublicKey(Buffer.alloc(32, n)).toBase58();
@@ -44,8 +45,11 @@ function harness(t: any) {
     walletSol: async () => 20_000_000_000n,
     gas: () => 1n,
   };
+  const sent: TelegramMessage[] = [];
   const options = { db, config: cfg, market, apiKey: "test", price: () => ({ ...snapshot, at: Date.now() }),
-    discover: async () => true, notify: async () => {},
+    discover: async () => true, notify: async (message: Notification) => {
+      assert.equal(typeof message, "object"); sent.push(message as TelegramMessage);
+    },
     pnl: { refresh: async () => new Map([[pool, { fetchedAt: Date.now(), positions: new Map([[source,
       { deposits: 0.5, withdrawals: 0, claimed: 0, percent: 10 }]]) }]]) } as any,
     screening: (async (criteria: any, _key: string, _base: string, _tokens: string, filters: any) => {
@@ -61,7 +65,7 @@ function harness(t: any) {
     VALUES(?,?,?,?,0,10,0,0)`).run(id, p, m, SOL_MINT);
   const candidates = (values = [{ address: pool, mint, symbol: "TOKEN", binStep: 80 }]) => { pools = values; };
   const delta = (m = SOL_MINT) => BigInt((db.prepare("SELECT delta FROM automation_balances WHERE mint=?").get(m) as any)?.delta ?? 0);
-  return { db, cfg, snapshot, calls, market, options, automation, real, candidates, delta };
+  return { db, cfg, snapshot, calls, market, options, automation, real, candidates, delta, sent };
 }
 
 test("SPOT range stays on SOL side in either orientation and approaches -80% within one bin", () => {
@@ -205,6 +209,94 @@ test("failed swap resumes after restart without reclosing or double crediting an
   await recovered.tick(); await recovered.tick();
   assert.equal(h.calls.holding, 1); assert.equal(h.delta(), 550000007n);
   assert.equal(h.db.prepare("SELECT count(*) n FROM trade_history").get()!.n, 1);
+});
+
+test("close notifications follow committed states and never replay after completion", async (t) => {
+  const h = harness(t); h.real(); h.snapshot.active = -50;
+  const states: string[] = [];
+  const notify = h.options.notify;
+  h.options.notify = async (message) => {
+    states.push(h.automation.list(false)[0].state);
+    await notify(message);
+  };
+  await h.automation.tick();
+  assert.deepEqual(states, ["CLOSING", "CLOSED"]);
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[0].text, /CLOSE SIMULASI DIMULAI/);
+  assert.match(h.sent[0].text, /Stop loss OOR bawah/);
+  assert.match(h.sent[0].text, /Posisi manual/);
+  assert.match(h.sent[1].text, /CLOSE SIMULASI SELESAI/);
+  assert.match(h.sent[1].text, /−0,15000000 SOL/);
+  assert.match(h.sent[1].text, /Quote simulasi berhasil/);
+  assert.match(h.sent[1].text, /Posisi nyata tetap terbuka dan memakai slot/);
+  assert.match(h.sent[1].text, /Saldo token lama tidak dihitung/);
+  assert.doesNotMatch(h.sent[1].text, /OOR_BELOW_PERCENT|DRY_RUN_QUOTED/);
+  const closed = h.automation.list(false)[0];
+  await (h.automation as any).beginClose(closed, { sol: 1n, token: 1n }, "OOR_BELOW_PERCENT");
+  await (h.automation as any).finishClose(closed);
+  await new PaperAutomation(h.options).tick();
+  assert.equal(h.sent.length, 2);
+  assert.equal(h.delta(), 550000007n);
+});
+
+test("pending swap notice is persisted once across retries and restarts, followed by one final result", async (t) => {
+  const h = harness(t); h.real(); h.snapshot.active = -50; h.calls.failQuote = true;
+  t.mock.method(console, "warn", () => {});
+  await h.automation.tick(); await h.automation.tick();
+  const recovered = new PaperAutomation(h.options);
+  await recovered.tick();
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[1].text, /SWAP SIMULASI TERTUNDA/);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_events WHERE type='SWAP_WAITING'").get()!.n, 1);
+  h.calls.failQuote = false;
+  await recovered.tick(); await recovered.tick();
+  assert.equal(h.sent.length, 3);
+  assert.match(h.sent[2].text, /CLOSE SIMULASI SELESAI/);
+  assert.equal(h.calls.holding, 1);
+});
+
+test("failed close state transaction emits no start notification or simulated credits", async (t) => {
+  const h = harness(t); h.real(); h.snapshot.active = -50;
+  t.mock.method(console, "warn", () => {});
+  h.db.exec(`CREATE TEMP TRIGGER reject_paper_close BEFORE UPDATE OF state ON automation_positions
+    WHEN NEW.state='CLOSING' BEGIN SELECT RAISE(ABORT,'mock commit failure'); END;`);
+  await h.automation.tick();
+  assert.equal(h.sent.length, 0); assert.equal(h.delta(), 0n);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_events WHERE type='CLOSE_STARTED'").get()!.n, 0);
+  assert.equal(h.automation.blocks().length, 0);
+});
+
+test("failed notification delivery cannot stop close completion or turn a committed entry into a skipped entry", async (t) => {
+  const h = harness(t); h.real(); h.snapshot.active = -50;
+  t.mock.method(console, "warn", () => {});
+  h.options.notify = async () => { throw new Error("Telegram offline"); };
+  await h.automation.tick();
+  assert.equal(h.automation.list(false)[0].state, "CLOSED");
+  assert.equal(h.delta(), 550000007n);
+  h.db.prepare("UPDATE positions SET state='CLOSED'").run();
+  h.snapshot.active = 0;
+  h.candidates([{ address: key(41), mint: key(42), symbol: "OTHER", binStep: 80 }]);
+  h.market.entry = async () => ({ snapshot: { ...h.snapshot, mint: key(42), at: Date.now() }, lower: -201, upper: 0,
+    rent: 10n, gas: 1n, model: [] });
+  (h.automation as any).lastScreen = 0;
+  await h.automation.tick();
+  assert.equal(h.automation.list()[0].state, "OPEN");
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_events WHERE type='ENTRY_SKIPPED'").get()!.n, 0);
+});
+
+test("entry and dust completion cards distinguish virtual funds, costs and unswapped tokens", async (t) => {
+  const h = harness(t); h.candidates([{ address: pool, mint, symbol: "<TOKEN>", binStep: 80 }]);
+  await h.automation.tick();
+  assert.match(h.sent[0].text, /ENTRY VIRTUAL/); assert.match(h.sent[0].text, /&lt;TOKEN&gt;\/SOL/);
+  assert.match(h.sent[0].text, /0,50000000 SOL/); assert.match(h.sent[0].text, /Rent refundable/);
+  assert.match(h.sent[0].text, /Non-refundable/); assert.equal(h.sent[0].parseMode, "HTML");
+  assert.ok((h.sent[0].replyMarkup!.inline_keyboard as any[][]).flat().some(b => b.callback_data?.startsWith("auto:position:")));
+  h.snapshot.active = -260; h.calls.dust = true;
+  await h.automation.tick();
+  const result = h.sent.at(-1)!;
+  assert.match(result.text, /Dilewati · nilai dust/);
+  assert.match(result.text, /tanpa gas swap dan tanpa kredit SOL/);
+  assert.doesNotMatch(result.text, /Quote simulasi berhasil/);
 });
 
 test("dust below $0.20 remains token, pays no swap gas and is never credited as SOL", async (t) => {

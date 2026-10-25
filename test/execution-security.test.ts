@@ -1,3 +1,4 @@
+import type { Notification } from "../src/telegram/client.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -128,7 +129,7 @@ function harness() {
   db.prepare(`INSERT INTO trade_history(mode,position_id,pool,token_mint,first_seen_at,entry_source,lower_bin,upper_bin,config_snapshot)
     VALUES('live',?,?,?,?, 'test',0,1,'{}')`).run(positionKey.toBase58(), poolKey.toBase58(), mint.toBase58(), 0);
   const broadcasts: Buffer[] = [];
-  const notifications: string[] = [];
+  const notifications: Notification[] = [];
   const delta = { meta: { err: null, preBalances: [10000000000], postBalances: [11000000000], fee: 5000,
     preTokenBalances: [], postTokenBalances: [{ mint: mint.toBase58(), owner: wallet.toBase58(), uiTokenAmount: { amount: "100" } }] },
     transaction: { message: { accountKeys: [wallet] } } };
@@ -142,7 +143,7 @@ function harness() {
     getAccountInfo: async (key: PublicKey) => key.equals(mint) ? { owner: tokenProgram } : tokenAccount(),
     getMultipleAccountsInfo: async (keys: PublicKey[]) => keys.map((key) => key.equals(ata(mint)) ? tokenAccount() : null),
   } as unknown as Connection;
-  const options = { db, config, wallet, connection, keypair: signer, jupiterApiKey: "test", notify: async (message: string) => { notifications.push(message); } };
+  const options = { db, config, wallet, connection, keypair: signer, jupiterApiKey: "test", notify: async (message: Notification) => { notifications.push(message); } };
   const executor = new CloseExecutor(options);
   const position = { id: positionKey.toBase58(), pool: poolKey.toBase58(), tokenMint: mint.toBase58(), quoteMint: solMint.toBase58(),
     lowerBinId: 0, upperBinId: 1, firstSeenAt: 0, ignored: false, state: "CLOSED" as const };

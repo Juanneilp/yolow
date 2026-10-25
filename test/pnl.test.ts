@@ -73,10 +73,10 @@ test("profit reminders repeat on schedule, filter fresh open profits, and hot ap
   now++;
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /2 posisi · PnL > 5% · interval 5 menit/);
-  assert.match(sent[0], /\+1\.00000000 SOL \(\+9\.0000%\)/);
-  assert.ok(sent[0].indexOf("+9.0000%") < sent[0].indexOf("+6.0000%"));
-  assert.doesNotMatch(sent[0], /\+20\.0000%|\+5\.0000%|\+4\.9900%|\+10\.0000%|\+8\.0000%/);
+  assert.match(sent[0], /2 posisi · PnL &gt; 5,00% · interval 5 menit/);
+  assert.match(sent[0], /\+1,00000000 SOL \(\+9,00%\)/);
+  assert.ok(sent[0].indexOf("+9,00%") < sent[0].indexOf("+6,00%"));
+  assert.doesNotMatch(sent[0], /\+20,00%|\+5,00%|\+4,99%|\+10,00%|\+8,00%/);
   await tick();
   assert.equal(sent.length, 1);
   const handler = createCommandHandler({ db, config, connection: noRpc, wallet: new PublicKey(wallet), telegramToken: "test", chatId: "1", agent });
@@ -90,7 +90,7 @@ test("profit reminders repeat on schedule, filter fresh open profits, and hot ap
   now += 60_000;
   await tick();
   assert.equal(sent.length, 3);
-  assert.match(sent[2], /1 posisi · PnL > 8% · interval 1 menit/);
+  assert.match(sent[2], /1 posisi · PnL &gt; 8,00% · interval 1 menit/);
   config.notify.profit_alert.enabled = false;
   now += 60_000;
   await tick();

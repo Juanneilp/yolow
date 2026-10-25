@@ -7,6 +7,9 @@ import { listPositions, SOL_MINT } from "../positions/monitor.ts";
 import type { PositionPnlMonitor } from "../positions/pnl.ts";
 import { fetchTopCareless } from "../market-data/top-careless.ts";
 import { getMeta, setMeta } from "../storage/db.ts";
+import { notificationCard, notificationSol, notificationPercent, triggerReasonLabel, swapStatusLabel, type NotificationDetail } from "../telegram/presentation.ts";
+import type { Notification } from "../telegram/client.ts";
+import { cachedTokenInfo, tokenLabel } from "../market-data/token-info.ts";
 import { safeError } from "../security.ts";
 import { exitReason, fresh, solLamports, swapAllowed } from "./rules.ts";
 import { markPaper, type Market, type PaperBin, type Holding } from "./market.ts";
@@ -22,7 +25,7 @@ type Price = { active: number; step: number; solIsX: boolean; at: number };
 type Options = {
   db: DatabaseSync; config: AppConfig; market: Market; pnl: PositionPnlMonitor; apiKey?: string;
   discover: () => Promise<boolean>; price: (pool: string) => Price | undefined;
-  notify: (message: string) => Promise<void>; screening?: typeof fetchTopCareless;
+  notify: (message: Notification) => Promise<void>; screening?: typeof fetchTopCareless;
 };
 
 export class PaperAutomation {
@@ -159,7 +162,7 @@ export class PaperAutomation {
             WHERE automation_positions.state='OPEN'`).run(id, position.id, position.pool, position.tokenMint,
               position.lowerBinId, position.upperBinId, snapshot.step, principal?.toString() ?? null, adjustment?.toString() ?? "0", gas.toString(), now);
           await this.beginClose(this.manualState(position.id)!, holding, reason);
-        } catch (error) { this.failure(position.id, error); }
+        } catch (error) { await this.failure(position.id, error); }
       }
       for (const item of this.list().filter((row) => row.origin === "virtual" && row.state === "OPEN")) {
         if (!this.active()) return;
@@ -175,11 +178,11 @@ export class PaperAutomation {
             .run(valuation.profit?.toString() ?? null, snapshot.at, item.id);
           const reason = exitReason({ ...snapshot, lower: item.lower_bin, upper: item.upper_bin, principal: BigInt(item.principal!), profit: valuation.profit, ignored: Boolean(item.ignored) }, this.options.config.automation);
           if (reason) await this.beginClose(item, holding, reason);
-        } catch (error) { this.failure(item.id, error); }
+        } catch (error) { await this.failure(item.id, error); }
       }
       for (const item of this.list().filter((row) => row.state === "CLOSING")) {
         if (!this.active()) return;
-        try { await this.finishClose(item); } catch (error) { this.failure(item.id, error); }
+        try { await this.finishClose(item); } catch (error) { await this.failure(item.id, error); }
       }
       if (!this.active()) return;
       if (this.availableSlots() <= 0) {
@@ -191,12 +194,35 @@ export class PaperAutomation {
     } finally { this.busy = false; }
   }
 
-  private failure(id: string, error: unknown): void {
+  private async failure(id: string, error: unknown): Promise<void> {
     const reason = safeError(error);
     this.options.db.prepare("UPDATE automation_positions SET error=? WHERE id=? OR source_id=?").run(reason, id, id);
     this.event("ERROR", { id, reason });
     console.warn("Automation simulation failed:", reason);
     setMeta(this.options.db, "automation_status", reason);
+    const item = this.list().find((row) => row.id === id || row.source_id === id);
+    if (item?.state === "CLOSING" && !this.options.db.prepare("SELECT 1 FROM automation_events WHERE type='SWAP_WAITING' AND json_extract(payload,'$.id')=? LIMIT 1").get(item.id)) {
+      this.event("SWAP_WAITING", { id: item.id });
+      await this.notifyPosition("⏳ SWAP SIMULASI TERTUNDA", item, [
+        { label: "Status", value: "Close sudah dicatat · swap menunggu" },
+        { label: "Detail", value: reason },
+        "Yolow akan mencoba swap kembali otomatis, tanpa mengulang close.",
+        "Quote yang belum berhasil tidak dihitung sebagai SOL.",
+      ]);
+    }
+  }
+
+  private async notifyPosition(title: string, item: Pick<PaperPosition, "id" | "source_id" | "pool" | "mint">,
+    details: NotificationDetail[], final = false, subtitle?: string): Promise<void> {
+    try {
+      await this.options.notify(notificationCard(title, details, {
+        subtitle: subtitle ?? `${tokenLabel(item.mint, cachedTokenInfo(item.mint))} / SOL`,
+        mode: "DRY-RUN", timezone: this.options.config.timezone,
+        positionId: item.source_id ?? item.id, pool: item.pool, mint: item.mint,
+        action: final ? "history" : "auto",
+        ...(!final ? { detailCallback: item.source_id ? `position:view:${item.source_id}` : `auto:position:${item.id}` } : {}),
+      }));
+    } catch (error) { console.warn("Automation notification failed:", safeError(error)); }
   }
 
   private async valuation(holding: Holding, mint: string, entryGas: bigint, closeGas: bigint, principal: bigint | null, adjustment: bigint | null): Promise<{ profit: bigint | null }> {
@@ -216,6 +242,7 @@ export class PaperAutomation {
     if (balance + this.delta(SOL_MINT) < gas) throw new Error("Saldo simulasi tidak cukup untuk gas close");
     if (!this.active() || (item.source_id ? listPositions(this.options.db).find((row) => row.id === item.source_id)?.ignored !== false : this.list().find((row) => row.id === item.id)?.ignored !== 0)) return;
     const rent = holding.rent ?? BigInt(item.rent);
+    let transitioned = false;
     this.transaction(() => {
       const changed = this.options.db.prepare("UPDATE automation_positions SET state='CLOSING',hold_sol=?,hold_token=?,rent=?,reason=?,last_at=?,error=NULL WHERE id=? AND state='OPEN'")
         .run(holding.sol.toString(), holding.token.toString(), rent.toString(), reason, Date.now(), item.id).changes;
@@ -224,7 +251,15 @@ export class PaperAutomation {
       this.change(item.mint, holding.token);
       if (reason === "OOR_BELOW_PERCENT") this.options.db.prepare("INSERT OR IGNORE INTO automation_blocks(mint,blocked_at,reason) VALUES(?,?,?)").run(item.mint, Date.now(), reason);
       this.event("CLOSE_STARTED", { id: item.id, source: item.source_id, reason, closeGas: gas.toString() });
+      transitioned = true;
     });
+    if (transitioned) await this.notifyPosition("🟡 CLOSE SIMULASI DIMULAI", item, [
+      { label: "Alasan", value: triggerReasonLabel(reason) },
+      { label: "Asal", value: item.source_id ? "Posisi manual" : "Posisi virtual" },
+      ...(reason === "OOR_BELOW_PERCENT" ? ["Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",
+        "Setelah loss, simulasi swap mencakup seluruh saldo mint di wallet, termasuk saldo lama."] : []),
+      item.source_id ? "Posisi nyata tetap terbuka dan memakai slot." : "Proses hanya mengubah ledger simulasi.",
+    ]);
   }
 
   private async finishClose(item: PaperPosition): Promise<void> {
@@ -246,6 +281,7 @@ export class PaperAutomation {
     const positionOut = amount > 0n ? received * token / amount : 0n;
     const gas = this.options.market.gas(item.upper_bin - item.lower_bin + 1);
     const profit = item.principal === null ? null : sol + positionOut + BigInt(item.adjustment) - BigInt(item.principal) - BigInt(item.entry_gas) - gas - swapGas;
+    let completed = false;
     this.transaction(() => {
       const changed = this.options.db.prepare("UPDATE automation_positions SET state='CLOSED',profit=?,closed_at=?,error=NULL WHERE id=? AND state='CLOSING'")
         .run(profit?.toString() ?? null, Date.now(), item.id).changes;
@@ -264,10 +300,26 @@ export class PaperAutomation {
           Number(BigInt(item.entry_gas) + gas + swapGas) / 1e9, null, Date.now());
       this.event("CLOSE_FINAL", { id: item.id, source: item.source_id, reason: item.reason, status,
         walletSweepInput: amount.toString(), positionInput: token.toString(), walletSweepOutput: received.toString(), positionOutput: positionOut.toString() });
+      completed = true;
     });
+    if (!completed) return;
     if (item.reason === "OOR_ABOVE_PERCENT") setMeta(this.options.db, "automation_preferred_pool", item.pool);
     this.lastScreen = 0;
-    await this.options.notify(`🟡 CLOSE SIMULASI SELESAI\n${item.reason}\nPosisi ${item.source_id ?? item.id}\nPool ${item.pool}\nProfit neto estimasi ${profit === null ? "belum tersedia" : Number(profit) / 1e9 + " SOL"}\nSwap ${status}\n${item.source_id ? "Posisi nyata tetap terbuka dan memakai slot." : "Saldo hanya berubah pada ledger simulasi."}`);
+    const principal = item.principal === null ? null : BigInt(item.principal);
+    await this.notifyPosition("🟡 CLOSE SIMULASI SELESAI", item, [
+      { label: "Profit neto estimasi", value: `${notificationSol(profit, true)}${profit !== null && principal !== null && principal > 0n ? ` (${notificationPercent(Number(profit) / Number(principal) * 100, true)})` : ""}` },
+      { label: "Alasan", value: triggerReasonLabel(item.reason!) },
+      { label: "Asal", value: item.source_id ? "Posisi manual" : "Posisi virtual" },
+      { label: "Swap", value: swapStatusLabel(status) },
+      ...(received > 0n ? [{ label: "SOL swap posisi estimasi", value: notificationSol(positionOut) }] : []),
+      ...(status === "SKIPPED_DUST" ? ["Token dust tetap disimpan; tanpa gas swap dan tanpa kredit SOL."] : []),
+      ...(item.reason === "OOR_BELOW_PERCENT" ? [
+        { label: "Hasil saldo lama estimasi", value: notificationSol(received - positionOut) },
+        "Saldo token lama tidak dihitung sebagai profit posisi.",
+        "Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",
+      ] : []),
+      item.source_id ? "Posisi nyata tetap terbuka dan memakai slot." : "Saldo hanya berubah pada ledger simulasi.",
+    ], true);
   }
 
   private async enter(): Promise<void> {
@@ -307,7 +359,17 @@ export class PaperAutomation {
             .run(plan.lower, plan.upper, amount.toString(), plan.gas.toString(), plan.rent.toString(), JSON.stringify(plan.model), plan.snapshot.at, id);
           this.event("ENTRY", { id, pool: pool.address, mint: pool.mint, amount: amount.toString(), rent: plan.rent.toString(), gas: plan.gas.toString(), nonRefundable: "0" });
         });
-        await this.options.notify(`🟡 ENTRY VIRTUAL · SPOT SOL\n${pool.symbol}/SOL\nDeposit ${Number(amount) / 1e9} SOL · step ${plan.snapshot.step}\nRange bin ${plan.lower}–${plan.upper}\nNon-refundable 0 SOL\nPool ${pool.address}\nTidak ada transaksi nyata.`);
+        await this.notifyPosition("🟡 ENTRY VIRTUAL · SPOT SOL", { id, source_id: null, pool: pool.address, mint: pool.mint }, [
+          { label: "Modal", value: notificationSol(amount) },
+          { label: "Strategi", value: "SPOT · SOL saja" },
+          { label: "Bin step", value: String(plan.snapshot.step) },
+          { label: "Range harga", value: `${notificationPercent(this.options.config.automation.min_price_percent)} hingga 0,00%` },
+          { label: "Range bin", value: `${plan.lower}–${plan.upper}` },
+          { label: "Non-refundable", value: notificationSol(0n) },
+          { label: "Rent refundable", value: notificationSol(plan.rent) },
+          { label: "Gas entry estimasi", value: notificationSol(plan.gas) },
+          "Tidak ada transaksi yang ditandatangani atau dikirim.",
+        ], false, `${pool.symbol}/SOL`);
       } catch (error) {
         this.options.db.prepare("DELETE FROM automation_positions WHERE id=? AND state='RESERVED'").run(id);
         const reason = safeError(error);

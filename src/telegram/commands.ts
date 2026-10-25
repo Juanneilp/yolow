@@ -30,7 +30,6 @@ type Options = {
 
 const sol = (lamports: number) => `${(lamports / 1e9).toFixed(4)} SOL`;
 const short = (value: string) => `${value.slice(0, 5)}…${value.slice(-5)}`;
-const positionLabel = (value: string) => `${value.slice(0, 8)}…${value.slice(-5)}`;
 const configPathDefault = "./config.json";
 const configMenuMarkup = { inline_keyboard: [
   [{ text: "🤖 Otomatisasi", callback_data: "config:section:automation" }, { text: "🔴 Live mode", callback_data: "cmd:/golive" }],
@@ -368,12 +367,14 @@ export function createCommandHandler(options: Options) {
         if (!position) return { text: "Posisi terbuka tidak ditemukan." };
         const ignored = command === "/ignore";
         if (!setPositionIgnored(db, position.id, ignored)) return { text: "Status posisi berubah sebelum perintah diterapkan." };
-        return { text: notificationCard(
+        return notificationCard(
           ignored ? "⏸ SINYAL EXIT DIABAIKAN" : "▶️ SINYAL EXIT DIAKTIFKAN",
-          [`Posisi ${positionLabel(position.id)}`, ignored
+          [ignored
             ? "Data posisi tetap diperbarui, tetapi sinyal exit tidak akan dieksekusi. Aktifkan lagi dengan /unignore."
             : "Sinyal exit kembali dapat dieksekusi sesuai konfigurasi Yolow."],
-        ) };
+          { mode: agent.executor.isDryRun() ? "DRY-RUN" : "LIVE", timezone: config.timezone,
+            positionId: position.id, pool: position.pool, detailCallback: `position:view:${position.id}` },
+        );
       }
       case "/history": {
         const count = args[0] === undefined ? 10 : Number(args[0]);

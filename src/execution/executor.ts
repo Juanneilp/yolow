@@ -18,7 +18,10 @@ import { discoverPositions, listPositions } from "../positions/monitor.ts";
 import { persistTradeCsv } from "../journal/export.ts";
 import { join } from "node:path";
 import { readJsonResponse, safeError } from "../security.ts";
-import { notificationCard, triggerReasonLabel } from "../telegram/presentation.ts";
+import { notificationCard, triggerReasonLabel, notificationSol, notificationPercent, type NotificationDetail } from "../telegram/presentation.ts";
+
+import type { Notification } from "../telegram/client.ts";
+import { cachedTokenInfo, tokenLabel } from "../market-data/token-info.ts";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -43,7 +46,7 @@ type Options = {
   config: AppConfig;
   wallet: PublicKey;
   jupiterApiKey?: string;
-  notify: (message: string) => Promise<void>;
+  notify: (message: Notification) => Promise<void>;
   keypairPath?: string;
   keypair?: Keypair;
 };
@@ -80,6 +83,20 @@ export class CloseExecutor {
   private signer?: Keypair;
 
   constructor(private readonly options: Options) { this.signer = options.keypair; }
+
+  private card(title: string, details: NotificationDetail[]) {
+    const id = details.find((item) => typeof item !== "string" && item.label === "Posisi");
+    const position = id && typeof id !== "string" ? listPositions(this.options.db, false).find((item) => item.id === id.value) : undefined;
+    const shownDetails = position ? details.filter((item) => typeof item === "string" || item.label !== "Pool") : details;
+    return notificationCard(title, shownDetails, { mode: this.isDryRun() ? "DRY-RUN" : "LIVE", timezone: this.options.config.timezone,
+      ...(position ? { subtitle: tokenLabel(position.tokenMint, cachedTokenInfo(position.tokenMint)) + (position.quoteMint === SOL_MINT ? " / SOL" : ""), pool: position.pool } : {}),
+      action: "history" });
+  }
+
+  private async notify(message: Notification): Promise<void> {
+    try { await this.options.notify(message); }
+    catch (error) { console.warn("Execution notification failed:", safeError(error)); }
+  }
 
   setSigner(signer: Keypair): void { this.signer = signer; }
 
@@ -257,8 +274,8 @@ export class CloseExecutor {
       }
     }
     await this.exportCsv();
-    await this.options.notify(notificationCard("🔄 JOURNAL POSISI DIPULIHKAN", [
-      `Posisi ${position.id}`,
+    await this.notify(this.card("🔄 JOURNAL POSISI DIPULIHKAN", [
+      { label: "Posisi", value: position.id, code: true },
       "Yolow menemukan transaksi close terkonfirmasi di blockchain dan memulihkan catatan trade.",
       `Signature https://solscan.io/tx/${result.signature}`,
     ]));
@@ -315,8 +332,8 @@ export class CloseExecutor {
     if (previous?.swap_status === "WAITING_METADATA") return;
     db.prepare("INSERT INTO trade_events(trade_id,at,type,payload) SELECT trade_id,?,'METADATA_PENDING',? FROM trade_history WHERE position_id=?")
       .run(Date.now(), JSON.stringify({ reason }), positionId);
-    await this.options.notify(notificationCard("⏳ MENUNGGU METADATA TRANSAKSI", [
-      `Posisi ${positionId}`, reason, "Signature tetap tersimpan. Yolow akan membaca ulang hasil tanpa mengirim ulang transaksi.",
+    await this.notify(this.card("⏳ MENUNGGU METADATA TRANSAKSI", [
+      { label: "Posisi", value: positionId, code: true }, reason, "Signature tetap tersimpan. Yolow akan membaca ulang hasil tanpa mengirim ulang transaksi.",
     ]));
   }
 
@@ -369,8 +386,8 @@ export class CloseExecutor {
       }
       if (error instanceof SkipClose) {
         this.markTrigger(trigger, error.outcome);
-        await this.options.notify(notificationCard("ℹ️ CLOSE DILEWATI", [
-          `Posisi ${trigger.positionId}`,
+        await this.notify(this.card("ℹ️ CLOSE DILEWATI", [
+          { label: "Posisi", value: trigger.positionId, code: true },
           `Alasan ${triggerReasonLabel(trigger.reason)}`,
           `🕒 Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
           reason,
@@ -382,10 +399,10 @@ export class CloseExecutor {
       setMeta(this.options.db, "close_failures_at", String(Date.now()));
       this.markTrigger(trigger, "FAILED");
       console.error("Close pipeline failed:", reason);
-      await this.options.notify(notificationCard(
+      await this.notify(this.card(
         failures >= 3 ? "🚨 CLOSE DIJEDA SEMENTARA" : "🔴 CLOSE GAGAL",
         [
-          `Posisi ${trigger.positionId}`,
+          { label: "Posisi", value: trigger.positionId, code: true },
           `Alasan ${triggerReasonLabel(trigger.reason)}`,
           `Percobaan gagal ${failures}/3`,
           `Detail ${reason}`,
@@ -420,7 +437,7 @@ export class CloseExecutor {
       failures = 0;
       setMeta(this.options.db, "close_failures", "0");
       setMeta(this.options.db, "close_failures_at", "0");
-      await this.options.notify(notificationCard("✅ PEMANTAUAN CLOSE DILANJUTKAN", [
+      await this.notify(this.card("✅ PEMANTAUAN CLOSE DILANJUTKAN", [
         "Jeda setelah kegagalan berakhir. Yolow kembali memproses sinyal exit.",
         `🕒 ${formatExitTimestamp(Date.now(), this.options.config.timezone)}`,
       ]));
@@ -438,11 +455,11 @@ export class CloseExecutor {
     if (!currentPosition.positionData.owner.equals(this.options.wallet)) throw new Error("Posisi tidak dimiliki wallet agent");
     const dryRun = this.isDryRun();
     if (!dryRun) this.promoteTrade(position.id);
-    await this.options.notify(notificationCard(
+    await this.notify(this.card(
       dryRun ? "🟡 SIMULASI CLOSE DIMULAI" : "🔴 CLOSE DIMULAI",
       [
-        `Posisi ${position.id}`,
-        `Pool ${position.pool}`,
+        { label: "Posisi", value: position.id, code: true },
+        { label: "Pool", value: position.pool, code: true },
         `Alasan ${triggerReasonLabel(trigger.reason)}`,
         `🕒 Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
       ],
@@ -535,16 +552,16 @@ export class CloseExecutor {
       if (tokenReceived > 0n) await this.finishSwap(position, tokenReceived, true, sent.at(-1));
       else this.options.db.prepare("UPDATE trade_history SET swap_status='SKIPPED_NO_TOKEN',finalized_at=? WHERE position_id=?").run(Date.now(), position.id);
       await this.exportCsv();
-      await this.options.notify(notificationCard("✅ SIMULASI CLOSE SELESAI", [
-        `Posisi ${position.id}`,
+      await this.notify(this.card("✅ SIMULASI CLOSE SELESAI", [
+        { label: "Posisi", value: position.id, code: true },
         `Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
         `Simulasi selesai ${formatExitTimestamp(Date.now(), this.options.config.timezone)}`,
         "Tidak ada transaksi yang ditandatangani atau dikirim ke blockchain.",
       ]));
       return 0;
     }
-    await this.options.notify(notificationCard("✅ CLOSE TERKONFIRMASI", [
-      `Posisi ${position.id}`,
+    await this.notify(this.card("✅ CLOSE TERKONFIRMASI", [
+      { label: "Posisi", value: position.id, code: true },
       `Sinyal exit ${formatExitTimestamp(trigger.confirmedAt, this.options.config.timezone)}`,
       `Close selesai ${formatExitTimestamp(Date.now(), this.options.config.timezone)}`,
       ...sent.map((signature) => `🔗 https://solscan.io/tx/${signature}`),
@@ -553,9 +570,9 @@ export class CloseExecutor {
     else {
       this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
         .run(this.options.config.swap.enabled ? "SKIPPED_NO_TOKEN" : "SKIPPED_DISABLED", Date.now(), position.id);
-      if (this.options.config.swap.enabled) await this.options.notify(notificationCard("ℹ️ SWAP DILEWATI", [
-        `Posisi ${position.id}`,
-        `Token ${position.tokenMint}`,
+      if (this.options.config.swap.enabled) await this.notify(this.card("ℹ️ SWAP DILEWATI", [
+        { label: "Posisi", value: position.id, code: true },
+        { label: "CA", value: position.tokenMint, code: true },
         "Tidak ada token yang diterima dari close untuk ditukar ke SOL.",
       ]));
       await this.exportCsv();
@@ -841,8 +858,8 @@ export class CloseExecutor {
         this.options.db.prepare("UPDATE trade_history SET swap_status='SKIPPED_DUST',remaining_dust_usd=?,finalized_at=? WHERE position_id=?")
           .run(estimatedUsd, Date.now(), position.id);
         this.updatePnl(position.id);
-        await this.options.notify(notificationCard("🟡 SWAP DILEWATI · NILAI DUST", [
-          `Posisi ${position.id}`,
+        await this.notify(this.card("🟡 SWAP DILEWATI · NILAI DUST", [
+          { label: "Posisi", value: position.id, code: true },
           `Estimasi nilai $${estimatedUsd.toFixed(2)} · batas swap $${this.options.config.swap.min_value_usd.toFixed(2)}`,
           "Token tetap berada di wallet karena nilainya di bawah batas minimum swap.",
         ]));
@@ -853,10 +870,10 @@ export class CloseExecutor {
         this.options.db.prepare("UPDATE trade_history SET swap_status='DRY_RUN_QUOTED',swap_sol_received=?,total_sol_returned=COALESCE(sol_received,0)+?,finalized_at=? WHERE position_id=?")
           .run(Number(build.outAmount) / 1e9, Number(build.outAmount) / 1e9, Date.now(), position.id);
         this.updatePnl(position.id);
-        await this.options.notify(notificationCard("🟡 SIMULASI SWAP", [
-          `Posisi ${position.id}`,
-          `Perkiraan diterima ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · sekitar $${estimatedUsd.toFixed(2)}`,
-          `Dampak harga ${priceImpact.toFixed(2)}%`,
+        await this.notify(this.card("🟡 SIMULASI SWAP", [
+          { label: "Posisi", value: position.id, code: true },
+          { label: "Perkiraan diterima", value: `${notificationSol(BigInt(build.outAmount))} · sekitar $${estimatedUsd.toFixed(2)}` },
+          { label: "Dampak harga", value: notificationPercent(priceImpact) },
           "Mode DRY-RUN: quote diperiksa, transaksi tidak dikirim.",
         ]));
         return;
@@ -949,10 +966,10 @@ export class CloseExecutor {
       const deltas = await this.transactionDeltas(signature, SOL_MINT);
       this.recordSwap(signature, position.id, deltas);
       const actualSol = Number(deltas.solDelta) / 1e9;
-      await this.options.notify(notificationCard("✅ SWAP TERKONFIRMASI", [
-        `Posisi ${position.id}`,
-        `Diterima ${actualSol.toFixed(6)} SOL`,
-        `Perkiraan quote ${(Number(build.outAmount) / 1e9).toFixed(6)} SOL · dampak harga ${priceImpact.toFixed(2)}%`,
+      await this.notify(this.card("✅ SWAP TERKONFIRMASI", [
+        { label: "Posisi", value: position.id, code: true },
+        { label: "Diterima", value: notificationSol(actualSol) },
+        { label: "Perkiraan quote", value: `${notificationSol(BigInt(build.outAmount))} · dampak harga ${notificationPercent(priceImpact)}` },
         `🔗 https://solscan.io/tx/${signature}`,
       ]));
       return;
@@ -960,8 +977,8 @@ export class CloseExecutor {
     saveSwap("NO_ROUTE", { error: lastError });
     this.options.db.prepare("UPDATE trade_history SET swap_status='NO_ROUTE',finalized_at=? WHERE position_id=?").run(Date.now(), position.id);
     this.updatePnl(position.id);
-    await this.options.notify(notificationCard("🔴 SWAP GAGAL", [
-      `Posisi ${position.id}`,
+    await this.notify(this.card("🔴 SWAP GAGAL", [
+      { label: "Posisi", value: position.id, code: true },
       `Detail ${lastError}`,
       `Tindakan: periksa rute, lalu gunakan /retryswap ${position.id} untuk mencoba lagi.`,
     ]));
@@ -987,10 +1004,10 @@ export class CloseExecutor {
       this.options.db.prepare("UPDATE trade_history SET swap_status=?,finalized_at=? WHERE position_id=?")
         .run(status, Date.now(), position.id);
       this.updatePnl(position.id);
-      await this.options.notify(notificationCard(
+      await this.notify(this.card(
         status === "UNKNOWN" ? "🚨 STATUS SWAP BELUM DIKETAHUI" : "🔴 SWAP GAGAL",
         [
-          `Posisi ${position.id}`,
+          { label: "Posisi", value: position.id, code: true },
           `Detail ${reason}`,
           status === "UNKNOWN"
             ? "Periksa signature di journal sebelum mengambil tindakan. Yolow tidak mengirim ulang otomatis."

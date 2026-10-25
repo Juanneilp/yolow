@@ -127,28 +127,55 @@ Explain that PnL is a Meteora lifetime estimate including fees/rewards, with gas
 
 ### Profit reminders
 
-Expose `notify.profit_alert.enabled`, `interval_minutes`, and `threshold_percent` in **Notifikasi & riwayat**. Defaults are enabled, five minutes, and strictly above 5%; changes apply without restart. Send one combined plain-text summary per interval when eligible open positions exist, including positions with ignored exits. Order by highest profit percentage and show token pair, shortened position ID, signed SOL PnL, and percentage. Use existing token labels with a shortened mint fallback.
+Expose `notify.profit_alert.enabled`, `interval_minutes`, and `threshold_percent` in **Notifikasi & riwayat**. Defaults are enabled, five minutes, and strictly above 5%; changes apply without restart. Send one combined HTML card summary per interval when eligible open positions exist, including positions with ignored exits. Order by highest profit percentage and show token pair, shortened position ID, signed SOL PnL, and percentage. Use existing token labels with a shortened mint fallback.
 
 Title the message **💰 POSISI PROFIT DI ATAS AMBANG**. Include qualifying count, configured threshold and interval, check time, the Meteora estimate caveat, and `/positions` for detail. Keep messages under 3,500 characters; split long summaries into numbered parts without dropping positions. Do not send reminders from manual refresh, failed fetches, missing values, or fetch results older than two minutes.
 
 ### Event notifications
 
-Use a consistent order: event icon and type, position/pair, reason, key value, WIB timestamp, then signature/link if available. Example:
+Use the shared HTML card formatter for all background notifications: discovery, entry/close/swap, profit, balances, recovery, backup/export errors and daily summaries. Order: bold event title, bold token label when known, explicit DRY-RUN/SIMULASI or LIVE, a light separator, labeled facts, explanatory action, full copyable addresses, configured local time, then buttons.
+
+Use Indonesian labels, SOL with eight decimal places and percent with two, decimal commas, and explicit positive/negative signs for PnL. Tiny nonzero values use a signed threshold instead of zero. Unknown amounts say `Belum tersedia`. Token labels use existing cached metadata with a shortened mint fallback; formatting must not add RPC calls or block trading on metadata lookup. Escape/redact dynamic text; address fields use `<code>`. Every HTML tag closes on its own line. Disable link previews.
+
+New positions show real-wallet origin, monitoring state, bin step, base fee and range. Missing positions say `Pemantauan dihentikan` and do not claim they were closed or sold. New/active position cards link to the existing detail callback and Meteora. Completed closes link to the journal; system problems link to settings. Include a Positions & PnL shortcut beside other section shortcuts. Only the first part of a multipart notification carries buttons.
+
+Paper close sends separate `CLOSE SIMULASI DIMULAI` and `CLOSE SIMULASI SELESAI` cards. Emit start only after OPEN → CLOSING commits. The final card shows estimated net position PnL, readable reason/swap labels, and manual/virtual origin. Manual positions remain open on-chain and continue occupying real slots. Loss cards explain the mint block and distinguish old-wallet-token proceeds from LP profit. Dust is unswapped token with no swap gas or realized SOL.
+
+On a failed pending paper swap, send one `SWAP SIMULASI TERTUNDA` card and record its notification marker in existing automation events. Retries/restarts do not repeat start/waiting notices; send a final result when completed. Do not change financial records due to notification failure. Delivery remains best-effort: no outbox, replay of old start messages, or guarantee during a network outage.
+
+Example final card (Telegram renders emphasis):
 
 ```text
-🔴 CLOSE FAILED · BONK/SOL
-Reason: Lower OOR · 30% below lower boundary
-Position: 7xAb…p9Q2
-Time: 03 Oct 2026 14:05 WIB
-Action: Position remains monitored
-```
+🟡 CLOSE SIMULASI SELESAI
+TOKEN/SOL
+🟡 DRY-RUN · SIMULASI
 
-Successful close, dust, stale-data, and circuit-breaker messages use the same structure with an appropriate status. An error should state the next action when a relevant command exists.
+━━━━━━━━━━━━━━━━━━
+
+Profit neto estimasi  +0,02500000 SOL (+5,00%)
+Alasan  Target profit neto
+Asal  Posisi manual
+Swap  Quote simulasi berhasil
+SOL swap posisi estimasi  0,10000000 SOL
+Posisi nyata tetap terbuka dan memakai slot.
+
+Posisi
+<full position address>
+Pool
+<full pool address>
+CA
+<full mint address>
+
+🕒 25 Okt 2026, 16.40.00 WIB
+
+[Buka Meteora]
+[Jurnal] [Posisi & PnL]
+```
 
 ## Consistency rules
 
-- Use the same terminology and statuses in Telegram, the journal, and CSV.
-- Display all times using the WIB format defined in the PRD.
+- Preserve journal/CSV storage codes and translate them into clear Indonesian labels in notifications.
+- Use the configured timezone and its actual timezone label; WIB applies to Asia/Jakarta.
 - Use SOL for SOL balances and values; include units for every number.
 - Keep buttons short and action-oriented. Put details in the position view or command result.
 - The `/golive` confirmation shows the current mode, abbreviated wallet, number of positions to be managed, and swap status before the confirmation button.
@@ -156,6 +183,6 @@ Successful close, dust, stale-data, and circuit-breaker messages use the same st
 
 ## Automation presentation
 
-Always label entries, closes and swaps as SIMULASI/DRY-RUN. Show real and virtual counts separately; a simulated manual close still consumes a real slot. Virtual cards use 🟡 VIRTUAL and estimated net SOL PnL. Mark closed manual simulations explicitly while the real position remains OPEN. `/auto unblock <mint>` removes a loss block only after its pending swap is resolved. Pending swaps and dust must never be displayed as realized SOL.
+Always label automation entries, closes and swaps as SIMULASI/DRY-RUN. Show real and virtual counts separately; a simulated manual close still consumes a real slot. Virtual cards use 🟡 VIRTUAL and estimated net SOL PnL. Mark closed manual simulations explicitly while the real position remains OPEN. `/auto unblock <mint>` removes a loss block only after its pending swap is resolved. Pending swaps and dust must never be displayed as realized SOL.
 
 Example: `Slot 16/15 · nyata 16 · virtual 0` followed by `Entry menunggu slot`. Notifications state the exit percentage reason, source/paper ID, pool, net estimated SOL profit, and swap result.

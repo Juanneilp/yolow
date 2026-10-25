@@ -186,6 +186,21 @@ Default: ringkasan gabungan setiap **5 menit** ketika ada posisi terbuka dengan 
 
 Pemeriksaan mengikuti siklus PnL 60 detik, pertama kali setelah satu interval dari refresh awal. Tidak ada notifikasi ketika data kosong, fetch gagal, atau hasil fetch berumur lebih dari dua menit. Refresh manual tidak memicu pesan. Restart memulai hitungan baru; tidak ada antrean pengiriman ulang atau pengiriman susulan untuk interval terlewat. Fitur ini tidak menjalankan close/swap.
 
+### Kartu notifikasi
+
+Semua notifikasi latar belakang memakai kartu HTML yang konsisten: judul dan pasangan token, mode **DRY-RUN/SIMULASI** atau **LIVE**, informasi utama, alamat yang bisa disalin, waktu lokal sesuai konfigurasi, serta tombol tindakan. Nama token menggunakan metadata yang sudah di-cache; bila belum tersedia, tampilkan mint singkat. Pengingat profit tetap mengikuti interval dan filter sebelumnya.
+
+- **Posisi baru terdeteksi:** asal posisi nyata, status pemantauan, bin step/base fee dan range; tombol Detail posisi dan Buka Meteora.
+- **Posisi tidak lagi di wallet:** pemantauan dihentikan setelah posisi tidak ditemukan pada pemindaian terbaru. Pesan ini tidak memastikan posisi sudah ditutup atau dijual.
+- **Entry virtual:** modal SPOT SOL, range/bin step, non-refundable nol, rent refundable dan gas estimasi.
+- **Close simulasi:** pesan dimulai dikirim setelah state close tersimpan, lalu pesan hasil akhir terpisah. Profit neto tetap estimasi; close simulasi atas posisi manual tidak menutup posisi nyata dan tidak membebaskan slot nyata.
+- **Swap tertunda:** satu pemberitahuan, lalu retry otomatis tanpa close ulang. Penanda tersimpan di event simulasi agar restart tidak mengulang pesan menunggu. Setelah berhasil, kirim hasil akhir. Dust tidak dihitung sebagai SOL; hasil token wallet lama dipisahkan dari profit LP.
+- **Saldo, error, pemulihan, backup/export dan ringkasan harian:** format sama dengan dampak dan tindakan berikutnya. Tombol menuju Pengaturan, Otomatisasi, Jurnal atau Posisi & PnL sesuai konteks.
+
+SOL pada kartu memakai delapan angka desimal, persen dua, dengan koma desimal dan tanda profit/loss. Nilai sangat kecil memakai ambang `<...`, sedangkan data kosong ditulis **Belum tersedia**. Format angka ini untuk tampilan; perhitungan transaksi tetap dalam integer base units.
+
+Pesan panjang dipecah menjadi bagian yang aman untuk HTML; tombol hanya pada bagian pertama. Label dan error disamarkan/di-escape, pratinjau tautan dinonaktifkan. Kegagalan Telegram tidak membatalkan pencatatan keuangan atau mengulang transaksi. Pengiriman bersifat best-effort tanpa jaminan pengiriman ulang selama gangguan jaringan; restart tidak memutar ulang notifikasi lama.
+
 ### Top Careless Strat
 
 Buka **🧪 Top Careless** pada menu utama atau kirim `/topcareless`. Default menampilkan 10 pool **token/SOL** dengan market cap token **≥ $1.5M**, umur token **≥ 3 hari**, dan TVL **≥ $5.000**. Setiap pool menjadi entri sendiri, termasuk beberapa pool dari token yang sama; tidak ada filter holder, Organic Score, atau umur maksimum.
