@@ -9,7 +9,9 @@ import { parseConfig } from "../src/config/config.ts";
 import { prepareConfigUpdate } from "../src/config/config-store.ts";
 import { createCommandHandler } from "../src/telegram/commands.ts";
 import { runBot } from "../src/telegram/bot.ts";
-import { openDatabase } from "../src/storage/db.ts";
+import { getMeta, openDatabase, setMeta } from "../src/storage/db.ts";
+import { PaperAutomation } from "../src/automation/automation.ts";
+import { ActiveBinMonitor } from "../src/market-data/active-bin.ts";
 
 const key = (n: number) => new PublicKey(Buffer.alloc(32, n)).toBase58();
 const sol = "So11111111111111111111111111111111111111112";
@@ -29,6 +31,121 @@ function handlerFor(db: ReturnType<typeof openDatabase>, appConfig: ReturnType<t
     connection: new Proxy({}, { get() { throw new Error("Unexpected RPC"); } }) as any,
     wallet: new PublicKey(key(50)), telegramToken: "123:test", chatId: "42" });
 }
+
+const activePosition = (id: number, pool = key(101), mint = key(1), quote = sol) => ({
+  id: key(id + 150), pool, tokenMint: mint, quoteMint: quote, state: "OPEN" as const,
+});
+
+test("Careless marks unique active wallet positions by mint and pool without changing ranking", () => {
+  const selected = selectTopCareless([makePool(), makePool(1, { address: key(103) }), makePool(2)],
+    new Map([[key(1), makeToken()], [key(2), makeToken(2)]]), config, now);
+  const ranked = selected.map((pool) => pool.address);
+  const first = activePosition(1);
+  const ignored = { ...activePosition(2), ignored: true };
+  const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now), {
+    positions: [first, first, ignored, activePosition(3, key(104)), { ...activePosition(4), state: "CLOSED" }],
+    syncedAt: now, discoveryFailed: false, pollIntervalSec: 300,
+  });
+  const cards = text.split("━━━━━━━━━━━━━━━━━━");
+  const samePool = cards.find((part) => part.includes(`Pool <code>${key(101)}</code>`))!;
+  assert.match(samePool, /👛 Token: <b>SUDAH ADA<\/b> · 3 posisi di 2 pool/);
+  assert.match(samePool, /🏊 Pool ini: <b>AKTIF<\/b> · 2 posisi/);
+  const otherPool = cards.find((part) => part.includes(`Pool <code>${key(103)}</code>`))!;
+  assert.match(otherPool, /👛 Token: <b>SUDAH ADA/);
+  assert.match(otherPool, /🏊 Pool ini: <b>BELUM ADA/);
+  const sameSymbol = cards.find((part) => part.includes(`Pool <code>${key(102)}</code>`))!;
+  assert.match(sameSymbol, /👛 Token: <b>BELUM ADA/);
+  assert.match(sameSymbol, /🏊 Pool ini: <b>BELUM ADA/);
+  assert.deepEqual(selected.map((pool) => pool.address), ranked);
+  const offsets = ranked.map((address) => text.indexOf(`Pool <code>${address}</code>`));
+  assert.deepEqual(offsets, [...offsets].sort((a, b) => a - b));
+  assert.match(text, /Sinkronisasi wallet:/); assert.doesNotMatch(text, /BELUM TERVERIFIKASI/);
+  assert.equal((text.match(/Buka Meteora DLMM/g) ?? []).length, 3);
+});
+
+test("Careless recognizes both token sides and keeps the original formatter compatible without wallet context", () => {
+  const selected = selectTopCareless([makePool()], new Map([[key(1), makeToken()]]), config, now);
+  const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now), {
+    positions: [activePosition(1, key(101), sol, key(1)), activePosition(2, key(105), key(5), key(1))],
+    syncedAt: now, discoveryFailed: false, pollIntervalSec: 300,
+  });
+  assert.match(text, /SUDAH ADA<\/b> · 2 posisi di 2 pool/);
+  assert.match(text, /AKTIF<\/b> · 1 posisi/);
+  const old = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now));
+  assert.doesNotMatch(old, /👛 Token:|🏊 Pool ini:|Sinkronisasi wallet/);
+});
+
+test("Careless does not claim absence from stale, failed or unknown wallet snapshots", () => {
+  const selected = selectTopCareless([makePool(), makePool(2)], new Map([[key(1), makeToken()], [key(2), makeToken(2)]]), config, now);
+  for (const status of [
+    { syncedAt: now - 600001, discoveryFailed: false },
+    { syncedAt: now, discoveryFailed: true },
+    { syncedAt: undefined, discoveryFailed: false },
+    { syncedAt: NaN, discoveryFailed: false },
+    { syncedAt: now + 1, discoveryFailed: false },
+    { syncedAt: 0, discoveryFailed: false },
+  ]) {
+    const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Shanghai", new Date(now), {
+      positions: [activePosition(1)], pollIntervalSec: 300, ...status,
+    });
+    assert.match(text, /SUDAH ADA<\/b> · 1 posisi di 1 pool · data terakhir/);
+    assert.match(text, /AKTIF<\/b> · 1 posisi · data terakhir/);
+    assert.match(text, /BELUM TERVERIFIKASI/);
+    assert.doesNotMatch(text, /<b>BELUM ADA<\/b>|Invalid Date|NaN|WIB/);
+  }
+  for (const age of [0, 600000]) {
+    const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now), {
+      positions: [], syncedAt: now - age, discoveryFailed: false, pollIntervalSec: 300,
+    });
+    assert.match(text, /<b>BELUM ADA<\/b>/); assert.doesNotMatch(text, /BELUM TERVERIFIKASI/);
+  }
+  const custom = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now), {
+    positions: [], syncedAt: now - 120001, discoveryFailed: false, pollIntervalSec: 60,
+  });
+  assert.match(custom, /BELUM TERVERIFIKASI/);
+});
+
+test("Careless uses real cached positions after screening, ignoring virtual and paper-closed states without RPC", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
+  new PaperAutomation({ db, config: appConfig, market: {} as any, pnl: {} as any, discover: async () => false,
+    price: () => undefined, notify: async () => {} });
+  const put = db.prepare(`INSERT INTO positions(id,pool,token_mint,quote_mint,lower_bin_id,upper_bin_id,first_seen_at,last_checked,state,ignored)
+    VALUES(?,?,?,?,0,10,1,? ,?,1)`);
+  put.run(key(151), key(101), key(1), sol, now, "OPEN");
+  put.run(key(153), key(103), key(3), sol, now, "CLOSED");
+  const paper = db.prepare(`INSERT INTO automation_positions(id,source_id,origin,pool,mint,lower_bin,upper_bin,bin_step,state,opened_at)
+    VALUES(?,?,?,?,?,0,10,80,?,1)`);
+  paper.run("closed-paper", key(151), "manual", key(101), key(1), "CLOSED");
+  paper.run("virtual-paper", null, "virtual", key(102), key(2), "OPEN");
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.hostname === "dlmm.datapi.meteora.ag") return Response.json({ pages: 1, data: [makePool(), makePool(2), makePool(3)] });
+    assert.equal(url.hostname, "api.jup.ag");
+    setMeta(db, "position_discovery_succeeded_at", String(now));
+    return Response.json([makeToken(), makeToken(2), makeToken(3)]);
+  });
+  const handler = handlerFor(db, appConfig, "fake-api-key");
+  const reply = await handler.onCommand("/topcareless", []);
+  const cards = reply!.text.split("━━━━━━━━━━━━━━━━━━");
+  assert.match(cards.find((part) => part.includes(`Pool <code>${key(101)}</code>`))!, /SUDAH ADA<\/b> · 1 posisi/);
+  for (const pool of [key(102), key(103)]) {
+    const card = cards.find((part) => part.includes(`Pool <code>${pool}</code>`))!;
+    assert.match(card, /👛 Token: <b>BELUM ADA<\/b>/); assert.match(card, /🏊 Pool ini: <b>BELUM ADA<\/b>/);
+  }
+  setMeta(db, "position_discovery_succeeded_at", String(now - 600001));
+  const feed = new ActiveBinMonitor({ db, connection: {} as any, fallbackPollMs: 15000 });
+  await (feed as any).updateStoredBins(key(101), 5);
+  assert.equal(getMeta(db, "position_discovery_succeeded_at"), String(now - 600001));
+  const stored = db.prepare("SELECT last_checked FROM positions WHERE id=?").get(key(151))!;
+  assert.equal(stored.last_checked, now);
+  // No additional metadata fetch resets the stale timestamp during this request.
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => new URL(input).hostname === "dlmm.datapi.meteora.ag"
+    ? Response.json({ pages: 1, data: [makePool(), makePool(2)] }) : Response.json([makeToken(), makeToken(2)]));
+  const stale = await handler.onCallback("cmd:/topcareless");
+  assert.match(stale!.text, /data terakhir/); assert.match(stale!.text, /BELUM TERVERIFIKASI/);
+});
 
 test("Careless requires inclusive market cap, token age and TVL thresholds and exact SOL pairs", () => {
   const token = makeToken();
@@ -374,12 +491,15 @@ test("Careless config defaults old files, validates filters and persists Telegra
   } finally { db.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-for (const count of [1, 10]) {
+for (const count of [0, 1, 10]) {
   test(`Careless keyboard button and callback render ${count} pools safely, keep filters and enforce authorization`, async (t) => {
     t.mock.method(Date, "now", () => now);
     t.mock.method(console, "log", () => {});
     const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
     const db = openDatabase(":memory:"); t.after(() => db.close());
+    setMeta(db, "position_discovery_succeeded_at", String(now));
+    db.prepare(`INSERT INTO positions(id,pool,token_mint,quote_mint,lower_bin_id,upper_bin_id,first_seen_at,last_checked,ignored)
+      VALUES(?,?,?,?,0,10,1,1,1)`).run(key(151), key(101), key(1), sol);
     const handler = handlerFor(db, appConfig, "fake-api-key");
     const shutdown = new AbortController();
     let polls = 0, poolRequests = 0;
@@ -414,6 +534,10 @@ for (const count of [1, 10]) {
     assert.equal((text.match(/Buka Meteora DLMM/g) ?? []).length, count * 2);
     assert.equal((text.match(/Simple Fee\/TVL 24j <b>1\.00%<\/b>/g) ?? []).length, count * 2);
     assert.equal((text.match(/Base fee 0\.10% · Bin step/g) ?? []).length, count * 2);
+    assert.equal((text.match(/👛 Token: <b>/g) ?? []).length, count * 2);
+    assert.equal((text.match(/🏊 Pool ini: <b>AKTIF<\/b>/g) ?? []).length, count > 0 ? 2 : 0);
+    assert.doesNotMatch(text, /BELUM TERVERIFIKASI/);
+
     for (const { body } of rendered) {
       assert.deepEqual(body.link_preview_options, { is_disabled: true });
       assert.ok(body.text.length <= 3500);
@@ -426,7 +550,7 @@ for (const count of [1, 10]) {
     }
     assert.ok(rendered[0].body.reply_markup.inline_keyboard.flat().some((button: any) => button.callback_data === "config:section:careless"));
     assert.match(replies.at(-1)!.body.text, /top_careless.min_tvl_usd = 5000/);
-    if (count === 1) assert.ok(rendered.some(reply => reply.method === "editMessageText"));
+    if (count <= 1) assert.ok(rendered.some(reply => reply.method === "editMessageText"));
     else assert.ok(rendered.length > 2);
   });
 }

@@ -3,7 +3,48 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fetchCandleSeries } from "../src/market-data/candles.ts";
 import { formatExitTimestamp, simulateLegacyTransaction } from "../src/execution/executor.ts";
-import { Connection, Keypair, SystemProgram, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import DLMM from "../src/meteora.ts";
+import { discoverPositions, listPositions, SOL_MINT } from "../src/positions/monitor.ts";
+import { getMeta, openDatabase, setMeta } from "../src/storage/db.ts";
+
+test("wallet discovery commits its timestamp with the full position snapshot and records empty wallets", async (t) => {
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  const wallet = Keypair.generate().publicKey, pool = Keypair.generate().publicKey, token = Keypair.generate().publicKey;
+  const id = Keypair.generate().publicKey;
+  let grouped = new Map([[pool.toBase58(), {
+    tokenX: { mint: { address: new PublicKey(SOL_MINT) } }, tokenY: { mint: { address: token } },
+    lbPair: { binStep: 80, parameters: { baseFactor: 1000, baseFeePowerFactor: 0 } },
+    lbPairPositionsData: [{ publicKey: id, positionData: { lowerBinId: 0, upperBinId: 20 } }],
+  }]]);
+  t.mock.method(DLMM, "getAllLbPairPositionsByUser", async () => grouped);
+  await discoverPositions({} as any, wallet, db, 1000);
+  assert.equal(getMeta(db, "position_discovery_succeeded_at"), "1000");
+  assert.equal(listPositions(db).length, 1);
+  db.prepare("UPDATE positions SET ignored=1").run();
+  await discoverPositions({} as any, wallet, db, 2000);
+  assert.equal(listPositions(db)[0].ignored, true);
+  grouped = new Map();
+  await discoverPositions({} as any, wallet, db, 3000);
+  assert.equal(listPositions(db).length, 0);
+  assert.equal(getMeta(db, "position_discovery_succeeded_at"), "3000");
+});
+
+test("failed wallet reads and failed snapshot commits preserve the previous discovery timestamp and positions", async (t) => {
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  const wallet = Keypair.generate().publicKey;
+  db.prepare(`INSERT INTO positions(id,pool,token_mint,quote_mint,lower_bin_id,upper_bin_id,first_seen_at,last_checked)
+    VALUES('position','pool','token',?,0,1,1,1)`).run(SOL_MINT);
+  setMeta(db, "position_discovery_succeeded_at", "1000");
+  t.mock.method(DLMM, "getAllLbPairPositionsByUser", async () => { throw new Error("RPC unavailable"); });
+  await assert.rejects(discoverPositions({} as any, wallet, db, 2000), /RPC unavailable/);
+  assert.equal(getMeta(db, "position_discovery_succeeded_at"), "1000"); assert.equal(listPositions(db).length, 1);
+  t.mock.method(DLMM, "getAllLbPairPositionsByUser", async () => new Map());
+  db.exec(`CREATE TEMP TRIGGER reject_discovery_timestamp BEFORE INSERT ON meta
+    WHEN NEW.key='position_discovery_succeeded_at' BEGIN SELECT RAISE(ABORT,'timestamp write failed'); END;`);
+  await assert.rejects(discoverPositions({} as any, wallet, db, 3000), /timestamp write failed/);
+  assert.equal(getMeta(db, "position_discovery_succeeded_at"), "1000"); assert.equal(listPositions(db).length, 1);
+});
 
 function stubRpc(connection: Connection): void {
   (connection as unknown as { _rpcRequest: (method: string) => Promise<unknown> })._rpcRequest = async (method: string) => {

@@ -73,11 +73,18 @@ Cards show token/SOL, token name, market cap, age, TVL, volume 24h, base fee, Si
 
 Use a separate title, result count, active filter block, and update time with timezone. Each pool card starts with its rank and pair in bold, then its name in italics. Use medals for the first three ranks and a neutral marker after that; ranking only reflects the stated metric. Put the bold Simple Fee/TVL score first, followed by TVL/volume, market cap/age, base fee/bin step, and comparison APR/Fee/TVL. Separate addresses and the Meteora link from the metrics with whitespace. Keep the explanation under **Cara baca** at the end. Every HTML tag must close on the same line so message splitting preserves valid formatting.
 
+After the name and before metrics, show two independent bold wallet markers: `👛 Token: SUDAH ADA · 3 posisi di 2 pool` and `🏊 Pool ini: AKTIF · 2 posisi`. Match exact mint addresses on either side of each real open position and exact pool addresses; never compare symbols. Deduplicate position IDs and count distinct pools for each mint. A token held in another pool has SUDAH ADA at token level and BELUM ADA for this pool. Owned results remain in their original ranking.
+
+Count actual OPEN positions, including ignored positions and real positions with a completed paper-close simulation. Exclude virtual positions and actual CLOSED positions. Header shows the last successful wallet-discovery time in the configured timezone; do not infer freshness from price-feed updates. The marker uses the existing snapshot with no extra RPC. Failed discovery, unknown/invalid/future timestamps, or age beyond two configured polling intervals makes the snapshot stale: positive counts say `data terakhir`; unmatched values say `BELUM TERVERIFIKASI`. A valid empty snapshot may show BELUM ADA. Explain the snapshot semantics in Cara baca and retain line-balanced HTML/message splitting.
+
 Example card (Telegram renders the emphasis):
 
 ```text
 🥇 1. TOKEN/SOL
 Token Name
+
+👛 Token: SUDAH ADA · 3 posisi di 2 pool
+🏊 Pool ini: AKTIF · 2 posisi
 
 💎 Simple Fee/TVL 24j 3.00%
 💧 TVL $10.0K · 📊 Volume 24j $100.0K

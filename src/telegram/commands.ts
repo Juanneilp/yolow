@@ -304,7 +304,11 @@ export function createCommandHandler(options: Options) {
           if (!jupiterApiKey) throw new Error("JUPITER_API_KEY dibutuhkan untuk Top Careless Strat.");
           const result = await fetchTopCareless(config.top_careless, jupiterApiKey,
             config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag", config.jupiter.tokens_base_url);
-          return { text: formatTopCareless(result, config.top_careless, config.timezone), parseMode: "HTML", replyMarkup };
+          return { text: formatTopCareless(result, config.top_careless, config.timezone, new Date(Date.now()), {
+            positions: listPositions(db), syncedAt: Number(getMeta(db, "position_discovery_succeeded_at")),
+            discoveryFailed: getMeta(db, "position_discovery_failed") === "true",
+            pollIntervalSec: config.mode.position_poll_interval_sec,
+          }), parseMode: "HTML", replyMarkup };
         } catch (error) {
           const reason = safeError(error);
           console.warn("Top Careless screening failed:", reason);

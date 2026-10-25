@@ -1,6 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { escapeHtml, readJsonResponse, redactSecrets } from "../security.ts";
 import { SOL_MINT } from "../positions/monitor.ts";
+import type { Position } from "../domain/types.ts";
 
 type Token = {
   address?: string;
@@ -182,11 +183,40 @@ export async function fetchTopCareless(config: TopCarelessConfig, apiKey: string
   return { pools: selectTopCareless(pools, tokens, config, now), limited };
 }
 
-export function formatTopCareless(result: { pools: CarelessPool[]; limited: boolean }, config: TopCarelessConfig, timezone: string, updatedAt = new Date()): string {
+export type CarelessWalletPositions = {
+  positions: ReadonlyArray<Pick<Position, "id" | "pool" | "tokenMint" | "quoteMint" | "state">>;
+  syncedAt?: number;
+  discoveryFailed: boolean;
+  pollIntervalSec: number;
+};
+
+export function formatTopCareless(result: { pools: CarelessPool[]; limited: boolean }, config: TopCarelessConfig, timezone: string, updatedAt = new Date(), wallet?: CarelessWalletPositions): string {
   const usd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(value);
   const label = (value: string, max = 32) => escapeHtml(redactSecrets(value).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max));
   const percent = (value: number | undefined) => value === undefined ? "Belum tersedia"
     : `${value > 0 && value < 0.01 ? "&lt;0.01" : value.toFixed(2)}%`;
+  const tokens = new Map<string, { count: number; pools: Set<string> }>();
+  const pools = new Map<string, number>();
+  for (const position of new Map(wallet?.positions.filter((item) => item.state === "OPEN").map((item) => [item.id, item])).values()) {
+    pools.set(position.pool, (pools.get(position.pool) ?? 0) + 1);
+    for (const mint of new Set([position.tokenMint, position.quoteMint])) {
+      const token = tokens.get(mint) ?? { count: 0, pools: new Set<string>() };
+      token.count++; token.pools.add(position.pool); tokens.set(mint, token);
+    }
+  }
+  const hasSync = wallet?.syncedAt !== undefined && Number.isSafeInteger(wallet.syncedAt) && wallet.syncedAt > 0 && wallet.syncedAt <= updatedAt.getTime();
+  const current = hasSync && !wallet!.discoveryFailed && updatedAt.getTime() - wallet!.syncedAt! <= wallet!.pollIntervalSec * 2000;
+  const ownership = (pool: CarelessPool): string[] => {
+    if (!wallet) return [];
+    const token = tokens.get(pool.mint), count = pools.get(pool.address) ?? 0;
+    const cached = current ? "" : " · data terakhir";
+    const absent = current ? "BELUM ADA" : "BELUM TERVERIFIKASI";
+    return [
+      `👛 Token: <b>${token ? "SUDAH ADA" : absent}</b>${token ? ` · ${token.count} posisi di ${token.pools.size} pool${cached}` : ""}`,
+      `🏊 Pool ini: <b>${count ? "AKTIF" : absent}</b>${count ? ` · ${count} posisi${cached}` : ""}`,
+      "",
+    ];
+  };
   const lines = [
     "🧪 <b>TOP CARELESS STRAT</b>",
     `📋 <b>${result.pools.length}/${config.limit} pool</b> · Meteora DLMM · Pasangan SOL`,
@@ -198,12 +228,17 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
     "📊 Urut Simple Fee/TVL 24j, lalu volume 24j terbesar",
     `🕒 Diperbarui ${new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" }).format(updatedAt)}`,
   ];
+  if (wallet) {
+    lines.push(`👛 Sinkronisasi wallet: ${hasSync ? new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short" }).format(new Date(wallet.syncedAt!)) : "Belum tersedia"}`);
+    if (!current) lines.push("⚠️ Status posisi memakai data terakhir; penanda tanpa kecocokan belum terverifikasi.");
+  }
   for (const [index, pool] of result.pools.entries()) lines.push(
     "",
     "━━━━━━━━━━━━━━━━━━",
     `${["🥇", "🥈", "🥉"][index] ?? "▫️"} <b>${index + 1}. ${label(pool.symbol, 16)}/SOL</b>`,
     `<i>${label(pool.name)}</i>`,
     "",
+    ...ownership(pool),
     `💎 Simple Fee/TVL 24j <b>${percent(pool.simpleFeeTvl24hPercent)}</b>`,
     `💧 TVL <b>${usd(pool.tvlUsd)}</b> · 📊 Volume 24j <b>${usd(pool.volume24h)}</b>`,
     `💵 MCap <b>${usd(pool.marketCapUsd)}</b> · 🕓 Umur <b>${pool.ageDays.toFixed(1)} hari</b>`,
@@ -222,5 +257,6 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
     "<i>Simple Fee/TVL 24j = Volume 24j × Base fee (%) ÷ TVL.</i>",
     "<i>Estimasi belum termasuk dynamic fee atau potongan protokol.</i>",
     "<i>APR = Fee/TVL 24j × 365, tanpa farm reward; bukan jaminan hasil posisi. Umur berdasarkan firstPool Jupiter.</i>");
+  if (wallet) lines.push("<i>Penanda memakai posisi nyata yang masih terbuka pada sinkronisasi terakhir. Token dicocokkan berdasarkan mint, pool berdasarkan alamat. Posisi yang diabaikan tetap dihitung; posisi virtual tidak dihitung.</i>");
   return lines.join("\n");
 }

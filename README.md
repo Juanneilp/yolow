@@ -211,6 +211,17 @@ Setiap kartu menampilkan base fee dan hasil Simple Fee/TVL 24 jam, serta APR dan
 
 Hasil memakai kartu berperingkat dengan Simple Fee/TVL sebagai angka utama. Header memisahkan jumlah hasil, filter aktif, dan waktu pembaruan beserta zona waktu. Tiga peringkat pertama memakai penanda medali; CA dan alamat pool tetap lengkap dan dapat disalin. Penjelasan estimasi tersedia pada bagian **Cara baca** di akhir hasil.
 
+Setiap kartu juga menandai posisi aktif pada wallet:
+
+```text
+👛 Token: SUDAH ADA · 3 posisi di 2 pool
+🏊 Pool ini: AKTIF · 2 posisi
+```
+
+Penanda token memakai alamat mint pada kedua sisi pasangan; penanda pool memakai alamat pool. Jika token aktif hanya di pool lain, token tetap **SUDAH ADA** tetapi pool ini **BELUM ADA**. Semua posisi nyata yang masih terbuka dihitung, termasuk yang exit-nya diabaikan atau close-nya baru disimulasikan. Posisi virtual dan posisi nyata yang sudah tertutup tidak dihitung. Penanda ini tidak menyaring hasil atau mengubah ranking.
+
+Data posisi memakai sinkronisasi rutin wallet (default lima menit), tanpa tambahan RPC saat membuka atau Refresh screening. Header menampilkan waktu sinkronisasi wallet terakhir, terpisah dari pembaruan harga/hasil screening. Waktu ini disimpan bersama snapshot discovery, termasuk saat wallet kosong; feed bin aktif tidak memperbaruinya. Setelah kegagalan discovery, timestamp hilang/tidak valid, atau usia data melebihi dua interval polling (default sepuluh menit), kecocokan yang diketahui diberi label **data terakhir**; ketidakcocokan menjadi **BELUM TERVERIFIKASI**. Posisi manual yang baru dibuka/ditutup di Meteora dapat tertinggal hingga sinkronisasi berikutnya.
+
 Umur token memakai `firstPool.createdAt` Jupiter, bukan umur pool DLMM. Kandidat tanpa data umur, market cap, volume, atau base fee yang valid dilewati; TVL harus positif. Base fee dan volume nol tetap valid. Pool dengan bin step kosong tetap ditampilkan dengan keterangan belum tersedia. Scan sumber maksimal 20 halaman × 100 pool dan tidak berhenti hanya karena jumlah hasil sudah terpenuhi. Urutan pengambilan API tetap Fee/TVL 24 jam lalu volume 24 jam; bot menghitung ranking akhir berdasarkan Simple Fee/TVL. Bila masih ada halaman setelah batas scan, pesan menjelaskan bahwa ranking hanya mencakup pool yang diperiksa, termasuk ketika hasil sudah penuh. Data baru diambil saat fitur dibuka atau **Refresh** ditekan, tanpa RPC Helius; scan yang lebih luas dapat memperlama respons. Daftar panjang dikirim sebagai beberapa pesan sesuai batas Telegram.
 
 Setelah scan selesai, mint kandidat dideduplikasi lintas halaman dan metadata Jupiter diambil per maksimal 100 mint. Ranking dihitung setelah seluruh metadata berhasil diambil. HTTP 429 dicoba ulang maksimal dua kali, dengan total jeda retry maksimal lima detik per request. Waktu tunggu mengikuti `Retry-After` atau `x-ratelimit-reset` yang lebih akhir; tanpa header valid, jedanya satu lalu dua detik. Jika batas terlampaui, bot menampilkan error dan petunjuk Refresh serta mencatat error yang sudah disamarkan di log. Kegagalan API tidak ditampilkan sebagai hasil kosong atau ranking parsial.

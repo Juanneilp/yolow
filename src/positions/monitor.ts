@@ -2,6 +2,7 @@ import DLMM from "../meteora.ts";
 import { PublicKey, type Connection } from "@solana/web3.js";
 import type { Position } from "../domain/types.ts";
 import type { DatabaseSync } from "node:sqlite";
+import { setMeta } from "../storage/db.ts";
 
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -51,6 +52,7 @@ export async function discoverPositions(connection: Connection, wallet: PublicKe
     }
     db.prepare("UPDATE positions SET state='CLOSED',closed_at=?,last_checked=? WHERE state='OPEN' AND id NOT IN (SELECT value FROM json_each(?))")
       .run(now, now, JSON.stringify(discovered.map((position) => position.id)));
+    setMeta(db, "position_discovery_succeeded_at", String(now));
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
