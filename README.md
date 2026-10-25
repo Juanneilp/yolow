@@ -16,7 +16,7 @@ Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per
 
 ### 1. Siapkan kebutuhan
 
-Pasang Git, **Node.js ≥ 22.21.0**, dan npm. Siapkan bot Telegram beserta token dan ID chat, API key Helius, serta public key wallet yang akan dipantau. API key Jupiter diperlukan dengan konfigurasi bawaan karena swap dan Top Careless Strat aktif.
+Pasang Git, **Node.js 22.x ≥ 22.23.4**, dan npm. `.nvmrc` mematok 22.23.4; major lain belum didukung dan ditolak saat startup. Versi ini memuat perbaikan keamanan 21 Oktober 2026. Siapkan bot Telegram beserta token dan ID chat, API key Helius, serta public key wallet yang akan dipantau. API key Jupiter diperlukan dengan konfigurasi bawaan karena swap dan Top Careless Strat aktif.
 
 ```sh
 node --version
@@ -30,6 +30,29 @@ chmod 600 .env config.json
 ```
 
 Gunakan akun GitHub yang memiliki akses bila repository privat. Jalankan seluruh perintah berikutnya dari direktori `yolow`.
+
+### Runtime terisolasi pada host bersama
+
+Jika Node global masih lama atau dipakai aplikasi lain, pasang Node resmi khusus Yolow. Contoh berikut untuk **Linux x64**, dijalankan dari direktori repository. Untuk arsitektur lain, gunakan distribusi resmi yang sesuai; jangan menjalankan arsip x64.
+
+```sh
+(
+  set -eu
+  mkdir -p .runtime/downloads .runtime/node
+  cd .runtime/downloads
+  curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+    https://nodejs.org/dist/v22.23.4/SHASUMS256.txt -o SHASUMS256.txt
+  curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+    https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz -o node-v22.23.4-linux-x64.tar.xz
+  rg '  node-v22\.23\.4-linux-x64\.tar\.xz$' SHASUMS256.txt | sha256sum --check --strict
+  tar -xJf node-v22.23.4-linux-x64.tar.xz --strip-components=1 -C ../node
+)
+export PATH="$PWD/.runtime/node/bin:$PATH"
+node --version
+npm ci
+```
+
+Jalankan langkah ini sebelum `npm ci` bila Node global tidak memenuhi persyaratan. `.runtime/` diabaikan Git. PATH di atas hanya memengaruhi shell saat ini; terminal baru perlu mengaturnya kembali. Konfigurasi PM2 memilih `.runtime/node/bin/node` jika tersedia, lalu memakai `node` dari PATH sebagai fallback. Pemeriksaan startup tetap menolak runtime yang tidak didukung. Node global dan daemon PM2 tidak ikut diperbarui.
 
 ### 2. Isi `.env`
 
@@ -62,7 +85,7 @@ Untuk menjalankan di latar belakang, pasang PM2 jika belum tersedia:
 
 ```sh
 npm install -g pm2
-pm2 start ecosystem.config.cjs
+pm2 start ecosystem.config.cjs --only yolow
 pm2 status yolow
 pm2 logs yolow --lines 25 --nostream
 pm2 save
@@ -77,6 +100,22 @@ pm2 save
 | `npm test` | Jalankan suite pengujian untuk pengembangan. |
 
 `pm2 save` menyimpan daftar proses, tetapi tidak memasang autostart OS. Pada host yang mendukung layanan startup, jalankan `pm2 startup` dan ikuti instruksi yang dicetak; pada lingkungan tanpa layanan tersebut, jalankan kembali PM2 setelah reboot. PM2 tetap berjalan setelah sesi SSH/tmux ditutup.
+
+### Upgrade dan pemulihan
+
+Sebelum upgrade, buat snapshot SQLite yang konsisten melalui backup SQLite/fitur backup Yolow, salin konfigurasi privat dengan permission `600`, dan simpan manifest serta lockfile sebelumnya di luar Git. Jangan menyalin hanya file database yang sedang aktif tanpa mempertimbangkan WAL.
+
+Validasi dependency dan tes menggunakan Node terpilih di staging lebih dahulu. Saat mengganti runtime/dependency aktif, hentikan hanya Yolow bila diperlukan; jangan menimpa executable Node yang sedang dipakai. Untuk menerapkan perubahan interpreter pada proses yang sudah terdaftar:
+
+```sh
+pm2 restart ecosystem.config.cjs --only yolow
+pm2 status yolow
+pm2 logs yolow --lines 25 --nostream
+```
+
+Setelah konfigurasi interpreter terpasang, perubahan source biasa cukup `pm2 restart yolow`. Periksa **runtime proses**, bukan hanya `node --version` di shell: gunakan executable `/proc/<pid-yolow>/exe` di Linux atau kolom interpreter PM2, lalu jalankan executable tersebut dengan `--version`. Pastikan startup menyatakan DRY-RUN, polling Telegram berjalan, serta `/status` dan `/auto` sesuai. Jangan membagikan dump `pm2 env`/`pm2 jlist` karena dapat memuat credential.
+
+Jika validasi aplikasi gagal, pulihkan source dan dependency yang kompatibel dari manifest/lockfile cadangan, tetap gunakan runtime yang sudah ditambal, lalu restart hanya Yolow. Pertahankan database dan mode SQLite; pemulihan database hanya untuk kerusakan data yang terkonfirmasi. Jangan mengatasi kegagalan dengan kembali ke Node yang rentan atau menonaktifkan pengaman dry-run.
 
 ## Penggunaan Telegram
 
@@ -361,10 +400,27 @@ Data harga setelah exit memerlukan harga exit USD yang tersedia dan seri candle 
 
 Detail arsitektur: [ARCHITECTURE.md](ARCHITECTURE.md). Persyaratan keamanan: [PRD_SECURITY.md](PRD_SECURITY.md). Panduan kontributor: [AGENTS.md](AGENTS.md).
 
+### Pemeliharaan keamanan dependency
+
+Gunakan `.npmrc` repository: registry resmi `https://registry.npmjs.org/`, verifikasi integritas lockfile, dan pemeriksaan engine wajib. Jangan menonaktifkan TLS atau mengganti registry dengan mirror HTTP. Instalasi reproducible memakai `npm ci`; pembaruan dependency ditinjau melalui perubahan manifest dan lockfile.
+
+```sh
+npm audit --omit=dev
+npm ls bn.js body-parser bigint-buffer toml stream-json uuid --all
+npm test
+```
+
+Snapshot audit dan penilaian jalur eksploitasi tersedia di [PRD_SECURITY.md](PRD_SECURITY.md), dengan tanggal dan tautan advisori resmi. `npm audit` mencakup paket transitif; jumlah paket terdampak bukan jumlah celah unik ataupun bukti bahwa semua celah bisa dieksploitasi melalui Yolow. Jangan menjalankan `npm audit fix --force` atau menganggap audit npm memeriksa kerentanan runtime Node.
+
+Patch kompatibel saat ini: `bn.js 5.2.5` dan `body-parser 1.20.9`. Beberapa advisory SDK tetap memerlukan penilaian/migrasi terpisah. Jalankan proses dengan user khusus tanpa root pada deployment baru; host saat ini masih root dan belum dimigrasikan. Patch Node khusus Yolow tidak menambal daemon PM2, Node global, atau aplikasi lain.
+
+Advisori PHP 21 Oktober 2026 memang ada, tetapi Yolow tidak menjalankan PHP. Sistem lain yang menggunakan PHP perlu ditinjau terpisah. Rujukan: [Node.js security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases), [PHP security notices](https://www.php.net/archive/2026.php).
+
 ## Batasan dan pemecahan masalah
 
 | Gejala / batasan | Penjelasan dan tindakan |
 | --- | --- |
+| Runtime ditolak / `EBADENGINE` | Gunakan Node 22.x ≥22.23.4; periksa PATH untuk npm dan interpreter aktual PM2. |
 | `Missing required environment variable` | Isi variabel wajib pada `.env`, lalu restart. API key Jupiter diperlukan jika swap atau careless aktif. |
 | Bot tidak merespons | Periksa token, ID chat/pengirim, akses jaringan, dan `pm2 logs yolow`. Pastikan hanya satu instance melakukan polling. |
 | Menu command tidak muncul | Registrasi menu memakai Telegram dan tidak menambah RPC Helius. Jika setup gagal, `/help` tetap tersedia; restart untuk mencoba lagi. Tombol menu native hanya dipasang pada chat pribadi. |

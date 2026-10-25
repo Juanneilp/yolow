@@ -2,47 +2,42 @@
 
 ## Project Structure & Module Organization
 
-Yolow is a TypeScript agent for monitoring Meteora DLMM positions and executing closes and Jupiter swaps.
+Yolow is a TypeScript Meteora DLMM monitor with dry-run SPOT automation and validated close/swap execution.
 
-- `src/main.ts` initializes the application; `src/agent.ts` coordinates background work.
-- Feature directories include `config/`, `execution/`, `market-data/`, `positions/`, `telegram/`, `storage/`, `triggers/`, and `journal/`.
-- `test/` contains automated tests; `test/fixtures/` stores sanitized API examples.
-- Root documentation includes `README.md`, `ARCHITECTURE.md`, `PRD.md`, and `PRD_SECURITY.md`. Telegram design references are documented in `DESIGN_SYSTEM.md`.
+- `src/main.ts` starts the application; `src/agent.ts` coordinates background jobs.
+- Features live in `automation/`, `config/`, `execution/`, `market-data/`, `positions/`, `telegram/`, `storage/`, and `journal/` under `src/`. Indicator and bin-count OOR engines are retired.
+- `test/` contains tests; `test/fixtures/` holds sanitized API examples.
+- Read `README.md`, `ARCHITECTURE.md`, `PRD.md`, `PRD_SECURITY.md`, and Telegram's `DESIGN_SYSTEM.md` for context.
 
 ## Build, Test, and Development Commands
 
-Use Node.js 22.21.0 or newer.
+Use **Node.js 22.x ≥22.23.4**; `.nvmrc` pins the verified version. Other majors are unsupported. For the private runtime, prefix commands with `PATH="$PWD/.runtime/node/bin:$PATH"`.
 
-- `npm ci`: install dependencies from the lockfile.
-- `npm start`: load `.env` and execute TypeScript directly using Node’s experimental type transformation.
+- `npm ci`: install the lockfile's dependencies.
+- `npm start`: load `.env` and run TypeScript with experimental type transformation.
 - `npm test`: run the test files explicitly listed in `package.json`.
-- `node --experimental-transform-types test/execution-security.test.ts`: run execution security tests directly.
-- `pm2 start ecosystem.config.cjs`: start the managed application.
+- `node --experimental-transform-types test/execution-security.test.ts`: run execution security tests.
+- `npm audit --omit=dev`: check current dependency advisories.
+- `pm2 start ecosystem.config.cjs --only yolow`: start Yolow.
 
-After completing changes and passing the relevant tests, always restart Yolow with `pm2 restart yolow` and verify its process status and startup logs. Restart only the Yolow process.
-
-There is no separate build step or configured linting command.
+There is no separate build or lint command. After tested changes, always run `pm2 restart yolow`; verify the actual interpreter, DRY-RUN status and Telegram polling. Apply interpreter changes through the ecosystem configuration with `--only yolow`. Restart only Yolow.
 
 ## Coding Style & Naming Conventions
 
-Follow existing TypeScript ES module conventions: two-space indentation, double quotes, semicolons, and `.ts` extensions in local imports. Use `camelCase` for functions and variables, `PascalCase` for classes and types, and descriptive module filenames such as `active-bin.ts`.
-
-Reuse existing helpers, including `safeError`, `redactSecrets`, and `readJsonResponse`. Keep transaction amounts in integer base units. No formatter configuration is provided.
+Use two-space indentation, double quotes, semicolons, ES modules and `.ts` local imports. Use `camelCase` functions/variables, `PascalCase` types/classes, and descriptive filenames such as `active-bin.ts`. Reuse `safeError`, `redactSecrets`, and `readJsonResponse`. Keep transaction amounts in integer base units. No formatter is configured.
 
 ## Testing Guidelines
 
-Tests use `node:test` and `node:assert/strict`. Name files `*.test.ts` and describe observable behavior in test names. Add new test files to the explicit `npm test` command.
-
-Use mocked providers and temporary or in-memory SQLite databases. Cover transaction validation, retries, restart recovery, and failure paths when changing execution logic. No numerical coverage threshold is configured.
+Use `node:test` and `node:assert/strict`; name files `*.test.ts` and register new files in `npm test`. Use mocked providers and temporary/in-memory SQLite. Cover transaction validation, failures, retries, restart recovery and dry-run isolation. Never test with production funds. No coverage threshold is configured.
 
 ## Commit & Pull Request Guidelines
 
-Existing commits use concise, imperative English subjects, such as “Fix live close simulation” and “Add Telegram command menu.”
-
-PRs should explain the problem, resulting behavior, test results, and configuration or migration effects. Reference relevant issues or security requirement IDs. Include example messages for Telegram presentation changes.
+Use concise imperative English subjects, such as “Fix live close simulation.” PRs explain the problem, resulting behavior, validation and configuration/migration effects. Reference relevant issues/security IDs and show example Telegram messages for presentation changes.
 
 ## Security & Configuration Tips
 
-Keep credentials in `.env` and local settings in ignored `config.json`. Store signing keypairs outside the repository with permission `600`. Never commit secrets, databases, exports, or backups.
+Keep credentials in `.env`, settings in ignored `config.json`, and permission-600 keypairs outside the repository. Never commit secrets, databases, exports or backups.
 
-Develop in dry-run mode and check the effective mode through `/status`; SQLite persists mode across restarts. Preserve signer validation, simulation, and safeguards against duplicate transactions.
+Use the official HTTPS npm registry and lockfile integrity checks. Pin compatible patches; never run `npm audit fix --force`. Record residual advisories in `PRD_SECURITY.md`.
+
+Check `/status` and `/auto`; SQLite persists mode. Preserve signer validation, simulation, duplicate-send protection and separate paper accounting. Automation must never sign or broadcast.

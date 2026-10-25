@@ -1,3 +1,4 @@
+import "./runtime.ts";
 import { chmod, lstat, readFile } from "node:fs/promises";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { YolowAgent } from "./agent.ts";

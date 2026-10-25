@@ -1,12 +1,12 @@
 # PRD Keamanan Yolow untuk Swap dan Posisi Meteora DLMM
 
-Versi 1.1 · Diperbarui 14 Oktober 2026 · Berdasarkan audit 13 Oktober 2026 · Status: SEC 01 sampai SEC 05 diterapkan pada kode dan diverifikasi lokal; SEC 06 dan SEC 07 masih usulan
+Versi 1.2 · Diperbarui 25 Oktober 2026 · SEC 01–05 diterapkan; patch kompatibel SEC 07 diterapkan dengan risiko transitif tersisa; SEC 06 masih usulan.
 
 ## 1. Ringkasan
 
 Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menutup posisi berdasarkan profit neto SOL atau kondisi out of range persentase, lalu menukar token hasil close menjadi SOL melalui Jupiter. Proses ini memberi aplikasi akses signing yang dapat menggerakkan dana wallet.
 
-Hasil audit menunjukkan lima masalah yang harus diperbaiki sebelum transaksi live: validasi isi instruksi Jupiter, retry swap, finalisasi hasil dry-run, pemulihan metadata transaksi, dan kesegaran data harga. Perubahan mode operasi serta dependency juga memerlukan perbaikan.
+Audit 13 Oktober menemukan lima masalah pada validasi instruksi Jupiter, retry swap, finalisasi dry-run, pemulihan metadata transaksi dan kesegaran data. SEC 01–05 telah diperbaiki. Audit 25 Oktober menambahkan pemeriksaan runtime dan dependency; hasil terbaru dipisahkan dari reproduksi historis di bawah.
 
 Pada audit awal, fitur membuka posisi DLMM belum tersedia. Rilis saat ini menambahkan entry virtual DRY-RUN, tanpa signer atau broadcast. Persyaratan untuk fitur tersebut dijelaskan sebagai prasyarat pengembangan berikutnya. Target pembaca adalah pemilik wallet dan engineer yang mengimplementasikan perbaikan.
 
@@ -20,7 +20,7 @@ Pada audit awal, fitur membuka posisi DLMM belum tersedia. Rilis saat ini menamb
 | SEC 04 | Metadata belum tersedia menghasilkan `WAITING_METADATA`; recovery membaca hasil tanpa broadcast ulang dan mencatat hasil serta fee swap secara atomik |
 | SEC 05 | Exit baru mensyaratkan snapshot harga/quote ≤120 detik dan memeriksa ulang sebelum perubahan state; executor menolak trigger lama dan snapshot kedaluwarsa sebelum broadcast |
 
-Regression test berada di `test/execution-security.test.ts`, termasuk fixture build dari API Jupiter dengan wallet dan ATA diganti untuk menghilangkan identitas wallet operasional. Pengambilan IDL dan build bersifat baca saja. Verifikasi ini belum mencakup pengiriman transaksi mainnet maupun pengaktifan kode melalui restart PM2.
+Regression test berada di `test/execution-security.test.ts`, termasuk fixture build dari API Jupiter dengan wallet dan ATA diganti untuk menghilangkan identitas wallet operasional. Pengambilan IDL dan build bersifat baca saja. Verifikasi transaksi tetap menggunakan mock, tanpa pengiriman mainnet. Pemeriksaan runtime dan restart PM2 dicatat pada pembaruan 25 Oktober di bawah.
 
 ## 2. Tujuan dan cakupan
 
@@ -56,7 +56,55 @@ Pembukaan posisi DLMM menjadi tahap berikutnya setelah masalah eksekusi saat ini
 
 Hasil test yang lulus belum mencakup seluruh skenario keamanan pada bagian berikutnya. Temuan lokal direproduksi dengan mock dan SQLite sementara tanpa transaksi mainnet.
 
+### Pembaruan runtime dan dependency — 25 Oktober 2026
+
+Audit sebelum patch: **15 paket terdampak (7 high, 8 moderate)**. Setelah instalasi bersih dari registry resmi: **13 paket (6 high, 7 moderate)**, tanpa temuan critical pada hasil npm saat pemeriksaan. Angka ini menghitung paket terdampak, termasuk transitif, bukan jumlah CVE unik atau bukti eksploitasi. Audit npm tidak menilai runtime Node.
+
+| Temuan | Bukti dan tindakan |
+| --- | --- |
+| Node 22.23.2 tertinggal security release 21 Oktober | Naik ke **22.23.4** khusus Yolow, arsip resmi dan SHA-256 diverifikasi. Perbaikan mencakup Brotli CVE-2026-111497, DNS, TLS, HTTP, serta dependency bawaan. Yolow memakai fetch/SDK untuk respons jaringan; decompression dapat terjadi sebelum validasi JSON aplikasi. |
+| Minimum Node lama menerima runtime rentan | Manifest menerima Node 22.x ≥22.23.4, `.nvmrc` mematok versi uji, engine-strict aktif. Import pemeriksaan runtime pertama pada entrypoint menolak versi lama/major lain sebelum konfigurasi JSON, database dan agent dimulai. |
+| Tarball lockfile dari mirror HTTP | Semua URL tarball beralih ke `https://registry.npmjs.org/`, integrity tetap diverifikasi. Hash yang sudah dipercaya membatasi modifikasi artefak lama; HTTPS juga melindungi jalur unduh dan pembaruan metadata. |
+| bn.js 5.2.2, CVE-2026-2739 | Patch **5.2.5**; regression test `maskn(0)` berjalan dalam subprocess dengan timeout agar kegagalan tidak menggantung suite. |
+| body-parser 1.20.8, CVE-2026-111181 | Patch transitif **1.20.9** tanpa mengganti SDK/Express. Test proses terpisah memproses gzip dengan trailing bytes dan memastikan permintaan berikutnya dilayani. Tidak ditemukan server HTTP Yolow yang mengekspos middleware ini. |
+| User root dan runtime bersama | User proses masih root. Node khusus Yolow tidak memperbarui Node global/daemon PM2/aplikasi lain; migrasi user khusus dan audit host terpisah tetap diperlukan. |
+
+Advisori runtime dengan potensi RCE tidak membuktikan host ini telah disusupi. Tidak dilakukan eksploitasi pada proses operasional atau pemeriksaan private key.
+
+#### Hasil validasi
+
+- Instalasi bersih dari lockfile di staging: **109 tes lulus**, termasuk batas runtime, regresi dependency, validasi instruksi transaksi, otorisasi, retry/recovery dan simulasi. Tes memakai mock/SQLite sementara; tes body-parser hanya mendengarkan loopback.
+- Pemeriksaan baca-saja menggunakan Node baru dan dependency baru berhasil membaca SQLite, bin/holding SDK Meteora serta quote Jupiter. Startup dengan Node 22.23.2 ditolak sebelum agent berjalan.
+- Setelah penggantian dependency, proses Yolow direstart dan executable aktual `/proc/<pid>/exe` dikonfirmasi sebagai `.runtime/node/bin/node`, versi **22.23.4**. Startup DRY-RUN dan polling Telegram berhasil; jumlah transaksi tetap **0** saat verifikasi. Proses lain tidak direstart atau berganti interpreter.
+- Konfigurasi interpreter Yolow disimpan untuk pemulihan PM2; konfigurasi operasional proses lain dibandingkan sebelum/sesudah dan tetap sama. Node global serta daemon PM2 tetap pada runtime sebelumnya.
+- Audit akhir pada instalasi aktif tetap **13 paket terdampak: 6 high, 7 moderate**; bn.js dan body-parser tidak lagi tercantum. Hash integrity paket dengan versi yang tidak berubah tetap sama.
+- Terlihat 43 peringatan RPC HTTP429 selama startup, tanpa kegagalan aplikasi yang tercatat pada jendela verifikasi. Startup akhirnya berhasil; ini bukan bukti kapasitas/rate limit jangka panjang telah terselesaikan.
+
+#### Advisory transitif yang belum diperbaiki
+
+| Paket / jalur | Penilaian jalur penggunaan dan keputusan |
+| --- | --- |
+| `bigint-buffer 1.1.5` melalui SPL Token → buffer-layout-utils | Advisory tidak memiliki versi patched. Binding native aktif pada host. Jalur layout yang diperiksa memakai u64/u128/u192/u256 dengan buffer tetap 8/16/24/32 byte; tidak ditemukan pemanggilan langsung aplikasi dengan panjang bebas. Ini membatasi jalur yang ditemukan, bukan bukti bahwa semua jalur SDK aman. Tetap **risiko high**, perlu penggantian/pembaruan upstream yang teruji. Jangan memakai downgrade SPL Token 0.1.8 yang disarankan audit otomatis. |
+| `toml 3.0.0` melalui Anchor | Parser termuat, tetapi pemanggilan `parse()` yang ditemukan berada di getter workspace untuk `Anchor.toml` lokal; aplikasi tidak memakai workspace itu. Jangan menambahkan parsing TOML tak tepercaya. Patch memerlukan perpindahan major di luar rentang Anchor saat ini; tetap tercatat sebagai risiko high. |
+| `stream-json 1.9.1` melalui jayson | Terdapat advisory DoS dan prototype pollution. Web3 memakai client JSON-RPC browser/HTTP, sedangkan parser stream berada di jalur TCP/TLS jayson yang tidak dipakai Yolow. Tidak ada modul stream-json dalam cache setelah impor SDK pada pemeriksaan. Jangan mengekspos parser tersebut; patch major harus diuji terpisah. |
+| `uuid 8.3.2` melalui jayson | Advisory mengenai v3/v5/v6 dengan buffer output eksternal. Jalur jayson yang diperiksa memakai v4 tanpa buffer eksternal; ID paper memakai `node:crypto.randomUUID`. Pertahankan batas ini, catat advisory sampai dependency upstream kompatibel tersedia. |
+
+Label high/moderate pada Meteora, Anchor, Solana dan jayson sebagian merupakan propagasi dari dependency di atas. Tidak memakai override lintas major, fork, atau monkey patch untuk menyembunyikan hasil audit.
+
+#### Peninjauan batas kepercayaan aplikasi
+
+- Otentikasi Telegram memeriksa chat dan pengirim sebelum dispatch command/callback; input config menolak prototype path dan secret. Endpoint API dipatok ke host HTTPS/WSS tepercaya, tanpa redirect atau credential di konfigurasi.
+- Respons aplikasi memakai timeout dan batas byte `readJsonResponse`; batas ini tidak otomatis berlaku pada seluruh respons RPC internal SDK. Host sumber tepercaya tetap merupakan batas kepercayaan.
+- Signer divalidasi terhadap owner, permission, lokasi di luar repo dan public key wallet; Jupiter exact-in diperiksa terhadap instruksi, akun, mint, jumlah dan slippage. Retry/metadata recovery serta dry-run memakai tes regresi yang ada.
+- `.env`, `config.json` dan SQLite operasional ditemukan dengan mode600. Secret tidak dicetak; backup privat dibuat di luar Git. Tidak mengubah aturan trading, mode, posisi atau signer.
+
+Rujukan: [Node security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases), [Node 22.23.4](https://nodejs.org/en/blog/release/v22.23.4), [bn.js](https://github.com/advisories/GHSA-378v-28hj-76wf), [body-parser](https://github.com/advisories/GHSA-27r3-jxmh-p828), [bigint-buffer](https://github.com/advisories/GHSA-3gc7-fjrx-p6mg), [toml recursion](https://github.com/advisories/GHSA-82x6-q7mm-w9cf), [toml prototype pollution](https://github.com/advisories/GHSA-v5mp-jgw5-2x6j), [stream-json prototype pollution](https://github.com/advisories/GHSA-mjw6-4jj6-33hc), [uuid](https://github.com/advisories/GHSA-w5hq-g745-h8pq).
+
+PHP mengumumkan dua RCE pada 21 Oktober dan pemberitahuan tambahan pada 23 Oktober; rujukan [PHP resmi](https://www.php.net/archive/2026.php). Yolow tidak menggunakan PHP dan executable PHP tidak ditemukan di PATH; hal ini tidak membuktikan seluruh host bebas instalasi PHP lain.
+
 ## 4. Temuan dan persyaratan perbaikan
+
+Uraian masalah SEC 01–04 berikut adalah reproduksi **historis sebelum perbaikan**, bukan deskripsi kerentanan aktif. Status saat ini ada pada tabel implementasi dan pembaruan audit di atas.
 
 ### SEC 01 Validasi isi transaksi Jupiter
 
@@ -161,18 +209,9 @@ Persyaratan ini menambahkan command perubahan mode operasi. PRD utama sebelumnya
 
 ### SEC 07 Penanganan advisory dependency
 
-**Prioritas: Medium.** Sumber: [package.json](package.json), `package-lock.json`, serta hasil audit npm pada 13 Oktober 2026.
+**Status 25 Oktober:** patch kompatibel bn.js dan body-parser serta runtime Node diterapkan. Audit turun dari 15 menjadi 13 paket terdampak. Rincian jalur, mitigasi dan advisory tersisa tercatat pada pembaruan audit di atas. Versi SDK tidak diubah; seluruh perubahan versi dan integrity diperiksa pada lockfile.
 
-Audit melaporkan 14 paket terdampak advisory, dengan 6 high dan 8 moderate. Angka tersebut mencakup dampak transitif. `bn.js 5.2.2` terkena advisory infinite loop, sedangkan `bigint-buffer` terkena advisory buffer overflow. Keterjangkauan eksploit melalui Yolow belum dibuktikan.
-
-**Persyaratan:**
-
-- Perbarui `bn.js` ke versi patch kompatibel yang memperbaiki advisory dan pin versi terpilih pada manifest serta lockfile.
-- Petakan penggunaan dependency transitif yang terdampak pada jalur SDK dan RPC; catat kondisi pemicu serta mitigasi untuk advisory yang belum memiliki perbaikan kompatibel.
-- Evaluasi pembaruan atau penggantian dependency berdasarkan kompatibilitas SDK; hindari perubahan mayor otomatis melalui audit fix.
-- Jalankan kembali test dan audit dependency setelah perubahan, serta dokumentasikan advisory yang masih tersisa.
-
-**Kriteria penerimaan:** advisory direct dependency yang memiliki perbaikan kompatibel terselesaikan; dependency transitif yang masih terdampak memiliki penilaian jalur penggunaan dan keputusan mitigasi tertulis. Jumlah paket terdampak tidak boleh dipakai sebagai bukti bahwa semua advisory dapat dieksploitasi.
+Pemeliharaan selanjutnya harus memakai registry HTTPS, instalasi lockfile yang bersih, audit sebelum/sesudah, dan tes regresi. Jangan menerapkan perubahan major otomatis melalui audit fix. Kriteria selesai untuk patch kompatibel adalah advisori target hilang tanpa perubahan perilaku transaksi; hal itu tidak berarti seluruh risiko transitif terselesaikan.
 
 ## 5. Pengaman yang harus dipertahankan
 
@@ -229,7 +268,7 @@ Wallet operasional sebaiknya hanya menampung dana yang dialokasikan ke bot. Perm
 
 Slippage 5%, 7,5%, dan 10% pada konfigurasi yang diaudit tetap memungkinkan hasil swap lebih rendah dari quote. Batas slippage juga tidak menjamin nilai token, ketersediaan rute, atau keamanan token. Kebijakan existing PRD untuk tetap mencoba swap tanpa veto price impact harus dipertahankan sambil mencatat dampaknya.
 
-Audit ini mencakup kode aplikasi, metadata lokal yang relevan, test yang tersedia, reproduksi mock, dan advisory dependency. Transaksi mainnet nyata, file private key aktual, keamanan host secara menyeluruh, dan kontrak Meteora/Jupiter belum diperiksa. Kondisi dry-run dan jumlah advisory merupakan snapshot 13 Oktober 2026.
+Audit ini mencakup kode aplikasi, metadata lokal yang relevan, test yang tersedia, reproduksi mock, dan advisory dependency. Transaksi mainnet nyata, file private key aktual, keamanan host secara menyeluruh, dan kontrak Meteora/Jupiter belum diperiksa. Snapshot historis 13 Oktober dipertahankan untuk konteks; kondisi runtime/dependency terbaru tercatat pada pembaruan 25 Oktober 2026. Eksploitasi advisory transitif belum dibuktikan melalui Yolow, dan audit host menyeluruh berada di luar cakupan.
 
 ## 9. Referensi
 
