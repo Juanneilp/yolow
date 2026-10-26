@@ -34,6 +34,8 @@ After lower OOR loss, the user authorizes swapping the **entire wallet balance o
 
 Failed swaps remain CLOSING and retry without a second close or duplicate credits. Persist mint blocks; `/auto unblock <mint>` permits future screening after the pending swap resolves. Unblocking does not bypass entry criteria.
 
+Manual blacklist: `/blacklist` lists full mint CAs; `/blacklist add <CA>` and `/blacklist remove <CA>` manage one address at a time. Persist in `top_careless.blacklisted_mints` with an empty default and immediate application. Validate Solana address format locally and match case exactly. Exclude all matching pools from Top Careless before result limits and block automatic entry/reentry, including an entry still undergoing checks. Continue monitoring and exits for existing positions. Manual blacklist and loss blocks are independent; removing either never clears the other. Existing screening messages update on Refresh.
+
 ## Dry-run accounting and recovery
 
 - No automatic signing, broadcasting or real balance changes. No LIVE entry implementation in this release.

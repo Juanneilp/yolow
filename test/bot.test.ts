@@ -145,7 +145,7 @@ for (const failure of [undefined, "setMyCommands", "setChatMenuButton"]) {
     for (const { body } of replies) {
       assert.equal(body.text, replies[0].body.text);
       for (const { command, description } of botCommands) assert.ok(body.text.includes(`/${command} — ${description}`));
-      for (const command of ["stats", "auto", "export", "ignore", "unignore", "trade", "note", "tag", "retryswap", "golive", "pnl"]) {
+      for (const command of ["stats", "auto", "blacklist", "export", "ignore", "unignore", "trade", "note", "tag", "retryswap", "golive", "pnl"]) {
         assert.ok(body.text.includes(`/${command}`), `help is missing /${command}`);
       }
       for (const group of ["Pemantauan", "Screening", "Jurnal", "Pengaturan"]) assert.ok(body.text.includes(group));

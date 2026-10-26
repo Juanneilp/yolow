@@ -151,6 +151,7 @@ Top Trending sudah dihapus. Command dan tombol lama menampilkan pemberitahuan pe
 | `/tag <trade_id\|position_id> <tag>` | Tambahkan tag trade. |
 | `/export` | Unduh jurnal CSV. |
 | `/topcareless` | Screening Top Careless Strat: pool /SOL, urut Simple Fee/TVL 24 jam lalu volume 24 jam. |
+| `/blacklist`, `/blacklist add <CA>`, `/blacklist remove <CA>` | Lihat, tambah, atau hapus blacklist mint untuk screening dan entry baru. |
 | `/config`, `/config set <path> <nilai>` | Buka editor atau ubah parameter yang diizinkan. |
 | `/retryswap <position_id>` | Minta retry swap dari hasil close terkonfirmasi yang masih tersisa. |
 | `/golive` | Minta aktivasi LIVE; memerlukan keypair dan konfirmasi dalam dua menit. |
@@ -204,6 +205,8 @@ Pesan panjang dipecah menjadi bagian yang aman untuk HTML; tombol hanya pada bag
 ### Top Careless Strat
 
 Buka **🧪 Top Careless** pada menu utama atau kirim `/topcareless`. Default menampilkan 10 pool **token/SOL** dengan market cap token **≥ $1.5M**, umur token **≥ 3 hari**, dan TVL **≥ $5.000**. Setiap pool menjadi entri sendiri, termasuk beberapa pool dari token yang sama; tidak ada filter holder, Organic Score, atau umur maksimum.
+
+Blacklist manual memakai alamat mint Solana lengkap (CA), dengan huruf besar/kecil dipertahankan. Kirim `/blacklist add <CA>` untuk menambahkan, `/blacklist` untuk melihat daftar, dan `/blacklist remove <CA>` untuk menghapus. Satu command mengelola satu CA; nama/simbol token tidak diterima. Semua pool token blacklist dikeluarkan sebelum batas jumlah hasil, dan entry otomatis baru termasuk reentry ditolak. Posisi terbuka tetap dipantau dan exit tetap berjalan. Daftar disimpan di `top_careless.blacklisted_mints` pada `config.json` dan aktif langsung; Refresh `/topcareless` untuk memperbarui pesan lama. Konfigurasi lama mendapat daftar kosong tanpa migrasi database. `/auto unblock` hanya menghapus blokir loss; penghapusan blacklist juga tidak menghapus blokir loss. Format CA divalidasi secara lokal tanpa API; alamat tidak diverifikasi sebagai mint on-chain.
 
 Urutan berdasarkan **Simple Fee/TVL 24 jam terbesar**, lalu **volume 24 jam terbesar**, lalu alamat pool untuk nilai yang sama. Estimasi fee = `Volume 24j × (Base fee % / 100)`; Simple Fee/TVL (%) = `Estimasi fee / TVL × 100`, atau langsung `Volume 24j × Base fee (%) / TVL`. Contoh: volume $100.000, base fee 0,3%, dan TVL $10.000 menghasilkan estimasi fee $300 dan Simple Fee/TVL **3,00%**. Base fee berasal dari `pool_config.base_fee_pct` API Meteora. Estimasi ini belum memperhitungkan dynamic fee atau potongan protokol.
 
@@ -368,6 +371,7 @@ Satu lamport = 1.000.000 micro-lamport; satu SOL = 1.000.000.000 lamport. Total 
 | `min_market_cap_usd` | `1500000` | Minimum market cap token; angka ≥ 0 USD. | T |
 | `min_token_age_days` | `3` | Umur minimum berdasarkan first pool Jupiter; angka ≥ 0 hari. | T |
 | `min_tvl_usd` | `5000` | Minimum TVL pool; angka ≥ 0 USD. | T |
+| `blacklisted_mints` | `[]` | Daftar CA Solana yang dikecualikan dari screening dan entry otomatis baru; kelola dengan `/blacklist`. | T |
 
 ### `jupiter`
 

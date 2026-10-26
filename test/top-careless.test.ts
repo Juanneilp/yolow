@@ -16,7 +16,7 @@ import { ActiveBinMonitor } from "../src/market-data/active-bin.ts";
 const key = (n: number) => new PublicKey(Buffer.alloc(32, n)).toBase58();
 const sol = "So11111111111111111111111111111111111111112";
 const now = Date.UTC(2026, 9, 21);
-const config: TopCarelessConfig = { enabled: true, limit: 10, min_market_cap_usd: 1_500_000, min_token_age_days: 3, min_tvl_usd: 5000 };
+const config: TopCarelessConfig = { enabled: true, limit: 10, min_market_cap_usd: 1_500_000, min_token_age_days: 3, min_tvl_usd: 5000, blacklisted_mints: [] };
 const makePool = (n = 1, overrides = {}) => ({
   address: key(n + 100), token_x: { address: key(n), market_cap: 1_500_000, symbol: "TOKEN", name: "Token" },
   token_y: { address: sol }, tvl: 5000, volume: { "24h": 50_000 }, fee_tvl_ratio: { "24h": 0.1 }, pool_config: { bin_step: 25, base_fee_pct: 0.1 }, ...overrides,
@@ -34,6 +34,125 @@ function handlerFor(db: ReturnType<typeof openDatabase>, appConfig: ReturnType<t
 
 const activePosition = (id: number, pool = key(101), mint = key(1), quote = sol) => ({
   id: key(id + 150), pool, tokenMint: mint, quoteMint: quote, state: "OPEN" as const,
+});
+
+test("manual blacklist validates old configs and CA arrays without enabling a restart", async () => {
+  const raw = JSON.parse(await readFile("config.example.json", "utf8"));
+  delete raw.top_careless.blacklisted_mints;
+  const appConfig = parseConfig(JSON.stringify(raw));
+  assert.deepEqual(appConfig.top_careless.blacklisted_mints, []);
+  for (const value of [null, "bad", {}, [123], ["bad"], [key(1), " bad "]]) {
+    assert.throws(() => prepareConfigUpdate(appConfig, "top_careless.blacklisted_mints", JSON.stringify(value)));
+  }
+  const update = prepareConfigUpdate(appConfig, "top_careless.blacklisted_mints", JSON.stringify([key(1)]));
+  assert.deepEqual(update.config.top_careless.blacklisted_mints, [key(1)]);
+  assert.deepEqual(appConfig.top_careless.blacklisted_mints, []);
+  assert.equal(update.restartRequired, false);
+});
+
+test("manual blacklist commands persist, audit, reload, and stay separate from loss blocks without API calls", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "yolow-blacklist-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "config.json");
+  const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  const handler = handlerFor(db, appConfig, undefined, path);
+  const automation = new PaperAutomation({ db, config: appConfig } as any);
+  const auditCount = () => db.prepare("SELECT count(*) n FROM config_changes").get()!.n;
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network"); });
+  assert.match((await handler.onCommand("/blacklist", []))!.text, /0 token/);
+  for (const mint of [key(1), key(2)]) {
+    assert.match((await handler.onCommand("/blacklist", ["add", mint]))!.text, /ditambahkan/);
+  }
+  assert.equal(auditCount(), 2);
+  assert.match((await handler.onCommand("/blacklist", ["add", key(1)]))!.text, /sudah ada/);
+  assert.match((await handler.onCommand("/blacklist", ["remove", key(3)]))!.text, /belum ada/);
+  for (const args of [["add"], ["add", key(3), key(4)], ["remove"], ["clear"]]) {
+    assert.match((await handler.onCommand("/blacklist", args))!.text, /Tambah: \/blacklist add/);
+  }
+  for (const action of ["add", "remove"]) {
+    assert.match((await handler.onCommand("/blacklist", [action, "bad"]))!.text, /CA tidak valid/);
+  }
+  assert.equal(auditCount(), 2);
+  const saved = await readFile(path, "utf8");
+  const reloaded = parseConfig(saved);
+  assert.deepEqual(reloaded.top_careless.blacklisted_mints, [key(1), key(2)]);
+  const listed = (await handlerFor(db, reloaded).onCommand("/blacklist", []))!.text;
+  assert.ok(listed.includes(key(1)) && listed.includes(key(2)));
+  const failed = handlerFor(db, appConfig, undefined, join(directory, "missing", "config.json"));
+  assert.match((await failed.onCommand("/blacklist", ["add", key(3)]))!.text, /CONFIG TIDAK DIUBAH/);
+  assert.deepEqual(appConfig.top_careless.blacklisted_mints, [key(1), key(2)]);
+  assert.equal(await readFile(path, "utf8"), saved);
+  assert.equal(auditCount(), 2);
+  db.prepare("INSERT INTO automation_blocks VALUES(?,?,?)").run(key(1), now, "OOR_BELOW_PERCENT");
+  automation.unblock(key(1));
+  assert.deepEqual(appConfig.top_careless.blacklisted_mints, [key(1), key(2)]);
+  db.prepare("INSERT INTO automation_blocks VALUES(?,?,?)").run(key(1), now, "OOR_BELOW_PERCENT");
+  assert.match((await handler.onCommand("/blacklist", ["remove", key(1)]))!.text, /dihapus/);
+  assert.deepEqual(automation.blocks().map((item) => item.mint), [key(1)]);
+  assert.deepEqual(appConfig.top_careless.blacklisted_mints, [key(2)]);
+  assert.deepEqual(parseConfig(await readFile(path, "utf8")).top_careless.blacklisted_mints, [key(2)]);
+  assert.equal(auditCount(), 3);
+  const audit = db.prepare("SELECT path,old_value,new_value FROM config_changes ORDER BY id DESC LIMIT 1").get()!;
+  assert.equal(audit.path, "top_careless.blacklisted_mints");
+  assert.equal(audit.old_value, JSON.stringify([key(1), key(2)]));
+  assert.equal(audit.new_value, JSON.stringify([key(2)]));
+});
+
+test("manual blacklist removes every matching pool in both SOL orientations before ranking and metadata", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  const cfg = { ...config, limit: 2, blacklisted_mints: [key(1)] };
+  const pools = [makePool(), makePool(1, { address: key(110), token_x: { address: sol }, token_y: makePool().token_x }),
+    makePool(2), makePool(3, { volume: { "24h": 100000 } })];
+  const tokens = [makeToken(1), makeToken(2), makeToken(3)];
+  const selected = selectTopCareless(pools, new Map(tokens.map((token) => [token.id, token])), cfg, now);
+  assert.deepEqual(selected.map((item) => item.mint), [key(3), key(2)]);
+  const queries: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.hostname === "dlmm.datapi.meteora.ag") return Response.json({ pages: 1, data: pools });
+    assert.equal(url.hostname, "api.jup.ag");
+    queries.push(url.searchParams.get("query")!);
+    return Response.json(tokens.slice(1));
+  });
+  const result = await fetchTopCareless(cfg, "test", poolsUrl, tokensUrl);
+  assert.deepEqual(result.pools, selected);
+  assert.deepEqual(queries, [[key(2), key(3)].join(",")]);
+  cfg.blacklisted_mints.push(key(2), key(3));
+  assert.deepEqual((await fetchTopCareless(cfg, "test", poolsUrl, tokensUrl)).pools, []);
+  assert.equal(queries.length, 1);
+});
+
+test("blacklist commands and callbacks from unauthorized chats or senders never change configuration", async (t) => {
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
+  const handler = handlerFor(db, appConfig);
+  const shutdown = new AbortController();
+  const dispatched: string[] = [];
+  let polls = 0;
+  t.mock.method(console, "log", () => {});
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    const method = new URL(input).pathname.split("/").at(-1)!;
+    if (method === "getUpdates") {
+      if (++polls === 2) { shutdown.abort(); return Response.json({ ok: true, result: [] }); }
+      const message = { chat: { id: 42 }, from: { id: 99 }, message_id: 1 };
+      return Response.json({ ok: true, result: [
+        { update_id: 1, message: { ...message, text: `/blacklist add ${key(1)}` } },
+        { update_id: 2, message: { ...message, chat: { id: 99 }, from: { id: 42 }, text: `/blacklist remove ${key(1)}` } },
+        { update_id: 3, callback_query: { id: "denied", from: message.from, message, data: `cmd:/blacklist add ${key(1)}` } },
+        { update_id: 4, message: { ...message, from: { id: 42 }, text: "/blacklist" } },
+      ] });
+    }
+    assert.ok(["setMyCommands", "setChatMenuButton", "sendMessage"].includes(method));
+    return Response.json({ ok: true, result: true });
+  });
+  await runBot({ token: "123:test", chatId: "42", signal: shutdown.signal,
+    onCommand: async (command, args) => { dispatched.push(command); return handler.onCommand(command, args); },
+    onCallback: async () => { throw new Error("Unauthorized callback reached handler"); },
+  });
+  assert.deepEqual(dispatched, ["/blacklist"]);
+  assert.deepEqual(appConfig.top_careless.blacklisted_mints, []);
+  assert.equal(db.prepare("SELECT count(*) n FROM config_changes").get()!.n, 0);
 });
 
 test("Careless marks unique active wallet positions by mint and pool without changing ranking", () => {

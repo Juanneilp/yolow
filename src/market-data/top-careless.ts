@@ -73,6 +73,7 @@ export type TopCarelessConfig = {
   min_market_cap_usd: number;
   min_token_age_days: number;
   min_tvl_usd: number;
+  blacklisted_mints: string[];
 };
 
 export type CarelessPool = {
@@ -104,6 +105,7 @@ function candidate(pool: Pool, config: TopCarelessConfig) {
   const token = pool.token_x?.address === SOL_MINT ? pool.token_y
     : pool.token_y?.address === SOL_MINT ? pool.token_x : undefined;
   if (typeof token?.address !== "string" || token.address === SOL_MINT || typeof pool.address !== "string" ||
+    config.blacklisted_mints.includes(token.address) ||
     tvl === undefined || tvl <= 0 || tvl < config.min_tvl_usd ||
     (numeric(token.market_cap) ?? -1) < config.min_market_cap_usd) return undefined;
   try { new PublicKey(token.address); new PublicKey(pool.address); }
@@ -224,6 +226,7 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
     "🔎 <b>Filter aktif</b>",
     `MCap ≥ ${usd(config.min_market_cap_usd)} · Umur ≥ ${config.min_token_age_days} hari`,
     `TVL ≥ ${usd(config.min_tvl_usd)} · Maks. ${config.limit} pool`,
+    `🚫 Blacklist manual: ${config.blacklisted_mints.length} token · /blacklist`,
     "",
     "📊 Urut Simple Fee/TVL 24j, lalu volume 24j terbesar",
     `🕒 Diperbarui ${new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" }).format(updatedAt)}`,

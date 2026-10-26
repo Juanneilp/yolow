@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Connection, PublicKey } from "@solana/web3.js";
+import { type Connection, PublicKey } from "@solana/web3.js";
 import { type AppConfig } from "../config/config.ts";
 import { applyConfigInPlace, editablePaths, prepareConfigUpdate, writeConfigAtomically } from "../config/config-store.ts";
 import { loadSigner, setLiveMode } from "../execution/executor.ts";
@@ -40,6 +40,7 @@ const configMenuMarkup = { inline_keyboard: [
 const configSections: Record<string, { title: string; paths: string[] }> = {
   careless: { title: "TOP CARELESS STRAT", paths: [
     "top_careless.enabled", "top_careless.limit", "top_careless.min_market_cap_usd", "top_careless.min_token_age_days", "top_careless.min_tvl_usd",
+    "top_careless.blacklisted_mints",
   ] },
   automation: { title: "OTOMATISASI DRY-RUN", paths: [
     "automation.enabled", "automation.max_positions", "automation.position_sol", "automation.min_bin_step",
@@ -126,7 +127,7 @@ export function createCommandHandler(options: Options) {
   const applyValidatedConfigUpdate = async (path: string, rawValue: string): Promise<Reply> => {
     try {
       const update = prepareConfigUpdate(config, path, rawValue);
-      if ((update.config.swap.enabled || update.config.top_careless.enabled || update.config.automation.enabled) && !jupiterApiKey) {
+      if (path !== "top_careless.blacklisted_mints" && (update.config.swap.enabled || update.config.top_careless.enabled || update.config.automation.enabled) && !jupiterApiKey) {
         throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau Top Careless Strat.");
       }
       if (update.config.automation.enabled && !agent.executor.isDryRun()) throw new Error("Otomatisasi hanya tersedia dalam DRY-RUN");
@@ -294,6 +295,26 @@ export function createCommandHandler(options: Options) {
 
   const onCommand = async (command: string, args: string[]): Promise<Reply | undefined> => {
     switch (command.toLowerCase()) {
+      case "/blacklist": {
+        const mints = config.top_careless.blacklisted_mints;
+        const usage = "Lihat: /blacklist\nTambah: /blacklist add <CA>\nHapus: /blacklist remove <CA>";
+        if (!args.length) return {
+          text: ["🚫 BLACKLIST MANUAL", `${mints.length} token`, ...mints, "",
+            "Semua pool token ini disembunyikan dari Top Careless dan ditolak untuk entry baru. Posisi terbuka tetap dipantau dan exit tetap berjalan.", "", usage].join("\n"),
+        };
+        if (args.length !== 2 || !["add", "remove"].includes(args[0])) return { text: usage };
+        const [action, mint] = args;
+        try { if (new PublicKey(mint).toBase58() !== mint) throw new Error(); }
+        catch { return { text: "CA tidak valid. Kirim alamat mint Solana lengkap.\n" + usage }; }
+        const exists = mints.includes(mint);
+        if (action === "add" && exists) return { text: `CA ${mint} sudah ada di blacklist.` };
+        if (action === "remove" && !exists) return { text: `CA ${mint} belum ada di blacklist.` };
+        const next = action === "add" ? [...mints, mint] : mints.filter((item) => item !== mint);
+        const reply = await applyValidatedConfigUpdate("top_careless.blacklisted_mints", JSON.stringify(next));
+        return reply.text.startsWith("✅") ? {
+          text: `✅ CA ${mint} ${action === "add" ? "ditambahkan ke" : "dihapus dari"} blacklist.\nPerubahan aktif sekarang; syarat entry dan blokir loss tetap berlaku.\nRefresh /topcareless untuk memperbarui hasil.`,
+        } : reply;
+      }
       case "/topcareless": {
         const replyMarkup = { inline_keyboard: [[
           { text: "🔄 Refresh", callback_data: "cmd:/topcareless" },
@@ -560,7 +581,7 @@ export function createCommandHandler(options: Options) {
     }
     if (data.startsWith("cmd:")) {
       const [command = "/", ...args] = data.slice(4).split(/\s+/);
-      if (!["/status", "/auto", "/positions", "/pnl", "/topcareless", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
+      if (!["/status", "/auto", "/positions", "/pnl", "/topcareless", "/blacklist", "/history", "/stats", "/export", "/tf", "/config", "/ignore", "/unignore", "/trade", "/note", "/tag", "/retryswap", "/golive"].includes(command.toLowerCase())) return undefined;
       return onCommand(command, args);
     }
     return undefined;

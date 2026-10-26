@@ -1,4 +1,5 @@
 import type { TopCarelessConfig } from "../market-data/top-careless.ts";
+import { PublicKey } from "@solana/web3.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { redactSecrets } from "../security.ts";
 
@@ -125,6 +126,13 @@ export function parseConfig(text: string): AppConfig {
   integer(careless.limit, "top_careless.limit", 1);
   if (careless.limit > 100) throw new Error("top_careless.limit cannot exceed 100");
   for (const key of ["min_market_cap_usd", "min_token_age_days", "min_tvl_usd"]) number(careless[key], `top_careless.${key}`, 0);
+  if (careless.blacklisted_mints === undefined) careless.blacklisted_mints = [];
+  try {
+    if (!Array.isArray(careless.blacklisted_mints) || careless.blacklisted_mints.some((mint: unknown) =>
+      typeof mint !== "string" || new PublicKey(mint).toBase58() !== mint)) throw new Error();
+  } catch {
+    throw new Error("top_careless.blacklisted_mints harus berupa daftar CA Solana yang valid.");
+  }
   const history = object(config.history, "history");
   const execution = object(config.execution, "execution");
   const notify = object(config.notify, "notify");

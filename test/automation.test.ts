@@ -118,6 +118,44 @@ test("16 manual positions block all screening and entry work; simulations never 
   assert.match(h.automation.status(), /Slot 16\/15/);
 });
 
+test("manual blacklist excludes candidates and preferred reentry even if screening returns a blocked mint", async (t) => {
+  const h = harness(t); h.candidates();
+  h.cfg.top_careless.blacklisted_mints = [mint];
+  await h.automation.tick();
+  assert.equal(h.calls.entry, 0); assert.equal(h.delta(), 0n);
+  const options = { ...h.options, screening: (async () => ({ pools: [{ address: pool, mint, binStep: 80 }], limited: false })) as any };
+  setMeta(h.db, "automation_preferred_pool", pool);
+  await new PaperAutomation(options).tick();
+  assert.equal(h.calls.entry, 0); assert.equal(h.automation.list().length, 0);
+});
+
+test("blacklist added during entry releases the reservation without a ledger debit", async (t) => {
+  const h = harness(t); h.candidates();
+  const entry = h.market.entry;
+  h.market.entry = async (...args) => {
+    const plan = await entry(...args);
+    h.cfg.top_careless.blacklisted_mints = [mint];
+    return plan;
+  };
+  await h.automation.tick();
+  assert.equal(h.calls.entry, 1);
+  assert.equal(h.automation.list().length, 0); assert.equal(h.delta(), 0n);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_events WHERE type='ENTRY'").get()!.n, 0);
+});
+
+test("blacklisting open virtual and manual positions preserves exits and prevents reentry", async (t) => {
+  const h = harness(t); h.candidates();
+  await h.automation.tick();
+  h.cfg.top_careless.blacklisted_mints = [mint];
+  h.real(); h.snapshot.active = 24;
+  await h.automation.tick();
+  assert.equal(h.calls.entry, 1);
+  assert.equal(h.automation.list().length, 0);
+  assert.equal(h.automation.list(false).length, 2);
+  assert.ok(h.automation.list(false).every((item) => item.state === "CLOSED" && item.reason === "OOR_ABOVE_PERCENT"));
+  assert.equal(h.db.prepare("SELECT state FROM positions").get()!.state, "OPEN");
+});
+
 test("entries reserve unique pools and mints, debit principal/rent/gas once, and survive restart", async (t) => {
   const h = harness(t);
   h.candidates([{ address: pool, mint, symbol: "TOKEN", binStep: 80 }, { address: key(20), mint, symbol: "TOKEN", binStep: 80 }]);

@@ -21,6 +21,7 @@ const allCommands = [
   { command: "auto", description: "Status simulasi; /auto unblock <mint> untuk menghapus blokir loss" },
   { command: "export", description: "Unduh jurnal trade sebagai CSV" },
   { command: "topcareless", description: "Screening pool /SOL: Simple Fee/TVL 24j, lalu volume 24j" },
+  { command: "blacklist", description: "Daftar CA; /blacklist add <CA> atau /blacklist remove <CA>" },
   { command: "config", description: "Buka konfigurasi; ubah dengan /config set <path> <nilai>" },
   { command: "ignore", description: "Abaikan sinyal exit: /ignore <position_id>" },
   { command: "unignore", description: "Aktifkan sinyal exit: /unignore <position_id>" },
@@ -38,7 +39,7 @@ const commandHelp = [
   "🧰 BANTUAN YOLOW",
   ...[
     { title: "📍 Pemantauan", commands: ["start", "menu", "status", "positions", "ignore", "unignore"] },
-    { title: "🧪 Screening", commands: ["topcareless"] },
+    { title: "🧪 Screening", commands: ["topcareless", "blacklist"] },
     { title: "📒 Jurnal", commands: ["history", "stats", "export", "trade", "note", "tag", "retryswap"] },
     { title: "⚙️ Pengaturan", commands: ["auto", "config", "golive", "help"] },
   ].map(({ title, commands }) => `\n${title}\n${commands.map((name) => {

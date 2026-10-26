@@ -119,7 +119,8 @@ export class PaperAutomation {
     return this.options.config.automation.max_positions - listPositions(this.options.db).length - this.list().filter((item) => item.origin === "virtual").length;
   }
   private eligible(mint: string, pool: string): boolean {
-    return !this.blocks().some((item) => item.mint === mint) &&
+    return !this.options.config.top_careless.blacklisted_mints.includes(mint) &&
+      !this.blocks().some((item) => item.mint === mint) &&
       !listPositions(this.options.db).some((item) => item.tokenMint === mint || item.pool === pool) &&
       !this.list().some((item) => item.mint === mint || item.pool === pool);
   }
@@ -324,7 +325,7 @@ export class PaperAutomation {
 
   private async enter(): Promise<void> {
     if (!(await this.options.discover()) || !this.active() || this.availableSlots() <= 0) return;
-    const blocked = new Set([...this.blocks().map((item) => item.mint), ...listPositions(this.options.db).map((item) => item.tokenMint), ...this.list().map((item) => item.mint)]);
+    const blocked = new Set([...this.options.config.top_careless.blacklisted_mints, ...this.blocks().map((item) => item.mint), ...listPositions(this.options.db).map((item) => item.tokenMint), ...this.list().map((item) => item.mint)]);
     const screenAt = Date.now();
     const result = await (this.options.screening ?? fetchTopCareless)({ ...this.options.config.top_careless,
       min_market_cap_usd: Math.max(1_500_000, this.options.config.top_careless.min_market_cap_usd),
@@ -352,7 +353,7 @@ export class PaperAutomation {
         const balance = await this.options.market.walletSol();
         this.transaction(() => {
           if (!fresh(screenAt) || !fresh(plan.snapshot.at) || !this.active() || this.availableSlots() < 0 || listPositions(this.options.db).some((item) => item.tokenMint === pool.mint || item.pool === pool.address) ||
-              this.blocks().some((item) => item.mint === pool.mint)) throw new Error("Entry tidak lagi memenuhi syarat");
+              this.options.config.top_careless.blacklisted_mints.includes(pool.mint) || this.blocks().some((item) => item.mint === pool.mint)) throw new Error("Entry tidak lagi memenuhi syarat");
           if (balance + this.delta(SOL_MINT) < amount + plan.rent + plan.gas) throw new Error("Saldo simulasi tidak cukup untuk deposit, rent dan gas");
           this.change(SOL_MINT, -(amount + plan.rent + plan.gas));
           this.options.db.prepare("UPDATE automation_positions SET state='OPEN',lower_bin=?,upper_bin=?,principal=?,entry_gas=?,rent=?,model=?,last_at=? WHERE id=?")

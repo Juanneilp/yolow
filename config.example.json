@@ -61,7 +61,8 @@
     "limit": 10,
     "min_market_cap_usd": 1500000,
     "min_token_age_days": 3,
-    "min_tvl_usd": 5000
+    "min_tvl_usd": 5000,
+    "blacklisted_mints": []
   },
   "jupiter": {
     "base_url": "https://api.jup.ag/swap/v2",
