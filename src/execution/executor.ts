@@ -12,6 +12,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppConfig } from "../config/config.ts";
 import type { Position, Trigger } from "../domain/types.ts";
+import { exitReason } from "../automation/rules.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { getMeta, setMeta } from "../storage/db.ts";
 import { discoverPositions, listPositions } from "../positions/monitor.ts";
@@ -299,7 +300,7 @@ export class CloseExecutor {
   }
 
   private assertFreshTrigger(trigger: Trigger): void {
-    if (!["TAKE_PROFIT", "OOR_BELOW_PERCENT", "OOR_ABOVE_PERCENT"].includes(trigger.reason)) throw new SkipClose("Strategi exit lama sudah dihapus", "RETIRED_TRIGGER");
+    if (!["TAKE_PROFIT", "OOR_BELOW_BINS", "OOR_ABOVE_BINS"].includes(trigger.reason)) throw new SkipClose("Strategi exit lama sudah dihapus", "RETIRED_TRIGGER");
     const at = Number(trigger.detail.snapshotAt);
     if (!Number.isSafeInteger(at) || at > Date.now() || Date.now() - at > 120_000) throw new SkipClose("Data harga/PnL kedaluwarsa", "STALE_PRICE");
   }
@@ -585,11 +586,8 @@ export class CloseExecutor {
     const pool = await DLMM.create(this.options.connection, new PublicKey(position.pool), { cluster: "mainnet-beta" });
     const activeBin = (await pool.getActiveBin()).binId;
     const solIsX = pool.tokenX.mint.address.toBase58() === SOL_MINT;
-    const boundary = trigger.reason === "OOR_BELOW_PERCENT"
-      ? (solIsX ? position.upperBinId : position.lowerBinId) : (solIsX ? position.lowerBinId : position.upperBinId);
-    const ratio = Math.exp((solIsX ? -1 : 1) * (activeBin - boundary) * Math.log1p(pool.lbPair.binStep / 10_000));
-    return trigger.reason === "OOR_BELOW_PERCENT" ? ratio <= 1 - this.options.config.automation.oor_below_percent / 100
-      : ratio >= 1 + this.options.config.automation.oor_above_percent / 100;
+    return exitReason({ active: activeBin, lower: position.lowerBinId, upper: position.upperBinId, solIsX,
+      principal: null, profit: null, ignored: position.ignored, at: Date.now() }, this.options.config.automation) === trigger.reason;
   }
 
   private async addPriorityFee(tx: Transaction): Promise<void> {

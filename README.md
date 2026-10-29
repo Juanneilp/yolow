@@ -1,6 +1,6 @@
 # Yolow Agent
 
-Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per posisi, dan mengirim notifikasi ke satu chat Telegram yang diizinkan. Otomatisasi SPOT SOL mensimulasikan pembukaan dan penutupan berdasarkan profit neto SOL serta out-of-range (OOR) persentase. Exit RSI/BB/MACD dan OOR berbasis jumlah bin telah dihapus. Mode awal instalasi baru adalah **DRY-RUN**: simulasi tanpa tanda tangan atau broadcast transaksi.
+Yolow memantau posisi Meteora DLMM milik satu wallet Solana, menampilkan PnL per posisi, dan mengirim notifikasi ke satu chat Telegram yang diizinkan. Otomatisasi SPOT SOL mensimulasikan pembukaan dan penutupan berdasarkan profit neto SOL serta out-of-range (OOR) berdasarkan jarak bin. Exit RSI/BB/MACD dan engine OOR lama dengan timer/override telah dihapus. Mode awal instalasi baru adalah **DRY-RUN**: simulasi tanpa tanda tangan atau broadcast transaksi.
 
 ## Daftar isi
 
@@ -172,7 +172,7 @@ Aktifkan `automation.enabled: true` hanya dengan mode efektif DRY-RUN. `/auto` m
 - Screening mengikuti Top Careless: MCAP ≥**$1,5M**, umur ≥**3 hari**, TVL ≥**$5K**, urut Simple Fee/TVL lalu volume. Otomatisasi mempertahankan batas minimum ini walau filter tampilan diturunkan. Mint/pool aktif dan token loss dikeluarkan sebelum batas hasil.
 - Entry ditolak bila biaya non-refundable tidak terbukti nol. Seluruh bin array dan bitmap diperiksa; composition fee, ekstensi token yang belum didukung ditolak. Gas jaringan diperbolehkan; rent posisi refundable dipisahkan dan dikembalikan dalam ledger close.
 - Maksimum **15 posisi**, termasuk posisi manual di Meteora dan reservasi/posisi virtual. Close simulasi atas posisi manual **tidak membebaskan slot nyata**.
-- Exit berlaku juga untuk posisi manual TOKEN/SOL, kecuali `/ignore`. Urutan prioritas: **OOR bawah ≥30%**, **OOR atas ≥10%**, lalu **profit neto ≥5% SOL**. OOR dihitung dari batas range yang terlewati, bukan jumlah bin atau harga entry. Profit memakai quote minimum setelah slippage dan estimasi gas entry/close/swap; rent dan saldo token wallet lama tidak dihitung sebagai profit.
+- Exit berlaku juga untuk posisi manual TOKEN/SOL, kecuali `/ignore`. Urutan prioritas: **OOR bawah ≥20 bin**, **OOR atas ≥10 bin**, lalu **profit neto ≥5% SOL**. Jarak bin dihitung dari batas range yang terlewati, bukan harga entry atau jumlah perpindahan kumulatif. Arah mengikuti harga token terhadap SOL, termasuk orientasi SOL di X/Y; pada SOL di X arah bin berbalik dari label range mentah di daftar posisi. Ambang tidak bergantung bin step. Profit memakai quote minimum setelah slippage dan estimasi gas entry/close/swap; rent dan saldo token wallet lama tidak dihitung sebagai profit.
 - Setelah OOR atas, pool yang sama diprioritaskan hanya jika seluruh syarat dan larangan duplikat masih berlaku. Setelah profit, gunakan screening baru. Setelah loss, blokir mint dan cari token lain; gunakan `/auto unblock <mint>` untuk mengizinkannya kembali.
 - Setelah loss, simulasi swap **seluruh saldo wallet mint tersebut**, termasuk saldo sebelum posisi ditutup. Bagian saldo lama dicatat terpisah dari profit LP. Setiap swap harus bernilai ≥**$0,20**; dust tetap token, tanpa gas swap dan tanpa kredit SOL. Route/quote gagal meninggalkan `CLOSING` untuk dicoba ulang, tanpa close atau kredit ganda.
 - Pengamatan harga memakai WebSocket dengan fallback 15 detik; siklus exit 15 detik, valuasi profit 60 detik, screening entry 5 menit atau setelah close. Screening/quote entry dilewati bila slot penuh. Data/quote berumur >2 menit ditolak.
@@ -245,7 +245,7 @@ Buka **Konfigurasi → bagian → parameter**. Boolean dan pilihan preset memaka
 /config set notify.profit_alert.interval_minutes 10
 /config set notify.profit_alert.threshold_percent 7.5
 /config set notify.profit_alert.enabled false
-/config set automation.oor_below_percent 30
+/config set automation.oor_below_bins 20
 /config set automation.enabled true
 /config set candles.fallback_chain ["meteora","geckoterminal"]
 ```
@@ -334,10 +334,10 @@ Candle hanya dipakai untuk harga historis dan audit jurnal; tidak ada evaluasi i
 | `min_bin_step` | `80` | Integer ≥80. |
 | `min_price_percent` | `-80` | Range SPOT dari persentase ini hingga 0%; dibulatkan ke bin terdekat di dalam batas, satu posisi extended. |
 | `profit_percent` | `5` | Close jika profit neto SOL ≥ ambang. |
-| `oor_above_percent` | `10` | Close jika harga ≥110% dari batas atas. |
-| `oor_below_percent` | `30` | Close loss jika harga ≤70% dari batas bawah; blokir mint sampai diaktifkan manual. |
+| `oor_above_bins` | `10` | Integer aman ≥1; close jika OOR atas mencapai jarak ini, lalu prioritaskan reopen pool sama jika tetap memenuhi syarat. |
+| `oor_below_bins` | `20` | Integer aman ≥1; close loss jika OOR bawah mencapai jarak ini, swap seluruh saldo mint ke SOL, lalu blokir mint sampai diaktifkan manual. |
 
-Semua parameter ini dapat diedit melalui Telegram tanpa restart. Blok lama `indicator_exit`, `oor_exit`, `pool_overrides`, `mode.shadow_candles`, polling candle, dan context candle dibuang oleh parser. `/tf` serta tombol lama hanya memberi pemberitahuan penghapusan.
+Semua parameter ini dapat diedit melalui Telegram tanpa restart. Parameter lama `automation.oor_above_percent` dan `automation.oor_below_percent` dibuang saat parsing; tanpa parameter bin baru, default menjadi 10/20 bin dan persentase lama tidak dikonversi. Posisi OPEN memakai ambang baru pada siklus berikutnya. Close CLOSING lama tetap menyelesaikan swap/reopen sesuai alasan aslinya, tanpa menulis ulang riwayat atau mengulang close. Blok lama `indicator_exit`, `oor_exit`, `pool_overrides`, `mode.shadow_candles`, polling candle, dan context candle dibuang oleh parser. `/tf` serta tombol lama hanya memberi pemberitahuan penghapusan.
 
 ### `execution`
 

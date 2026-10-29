@@ -19,7 +19,7 @@ export type PaperPosition = {
   lower_bin: number; upper_bin: number; bin_step: number; state: "RESERVED" | "OPEN" | "CLOSING" | "CLOSED";
   principal: string | null; adjustment: string; entry_gas: string; rent: string; model: string;
   hold_sol: string | null; hold_token: string | null; profit: string | null; last_at: number | null;
-  reason: TriggerReason | null; opened_at: number; closed_at: number | null; ignored: number; error: string | null;
+  reason: TriggerReason | "OOR_BELOW_PERCENT" | "OOR_ABOVE_PERCENT" | null; opened_at: number; closed_at: number | null; ignored: number; error: string | null;
 };
 type Price = { active: number; step: number; solIsX: boolean; at: number };
 type Options = {
@@ -79,7 +79,7 @@ export class PaperAutomation {
       `Slot ${real + virtual.length}/${this.options.config.automation.max_positions} · nyata ${real} · virtual ${virtual.length}`,
       `Entry ${this.options.config.automation.position_sol} SOL · SPOT SOL saja · bin step ≥${this.options.config.automation.min_bin_step}`,
       `Range ${this.options.config.automation.min_price_percent}%–0% · profit neto ≥${this.options.config.automation.profit_percent}%`,
-      `OOR atas ≥${this.options.config.automation.oor_above_percent}% · bawah ≥${this.options.config.automation.oor_below_percent}% dari batas range`,
+      `OOR atas ≥${this.options.config.automation.oor_above_bins} bin · bawah ≥${this.options.config.automation.oor_below_bins} bin dari batas range (harga token/SOL)`,
       `Perubahan saldo SOL simulasi ${balances ? Number(balances.delta) / 1e9 : 0} SOL · swap menunggu ${pending}`,
       `Token diblokir ${this.blocks().length}`, ...this.blocks().map((item) => item.mint),
       `Status: ${last}`, "", "Close manual hanya simulasi; posisi nyata tetap memakai slot.",
@@ -250,24 +250,26 @@ export class PaperAutomation {
       if (!changed) return;
       this.change(SOL_MINT, holding.sol + rent - gas);
       this.change(item.mint, holding.token);
-      if (reason === "OOR_BELOW_PERCENT") this.options.db.prepare("INSERT OR IGNORE INTO automation_blocks(mint,blocked_at,reason) VALUES(?,?,?)").run(item.mint, Date.now(), reason);
+      if (reason === "OOR_BELOW_BINS") this.options.db.prepare("INSERT OR IGNORE INTO automation_blocks(mint,blocked_at,reason) VALUES(?,?,?)").run(item.mint, Date.now(), reason);
       this.event("CLOSE_STARTED", { id: item.id, source: item.source_id, reason, closeGas: gas.toString() });
       transitioned = true;
     });
     if (transitioned) await this.notifyPosition("🟡 CLOSE SIMULASI DIMULAI", item, [
       { label: "Alasan", value: triggerReasonLabel(reason) },
       { label: "Asal", value: item.source_id ? "Posisi manual" : "Posisi virtual" },
-      ...(reason === "OOR_BELOW_PERCENT" ? ["Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",
+      ...(reason === "OOR_BELOW_BINS" ? ["Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",
         "Setelah loss, simulasi swap mencakup seluruh saldo mint di wallet, termasuk saldo lama."] : []),
       item.source_id ? "Posisi nyata tetap terbuka dan memakai slot." : "Proses hanya mengubah ledger simulasi.",
     ]);
   }
 
   private async finishClose(item: PaperPosition): Promise<void> {
+    // Pending percentage exits retain their original sweep/reentry behavior after restart.
+    const loss = item.reason === "OOR_BELOW_BINS" || item.reason === "OOR_BELOW_PERCENT";
     const token = BigInt(item.hold_token!), sol = BigInt(item.hold_sol!);
     const chain = await this.options.market.walletToken(item.mint);
     const available = chain + this.delta(item.mint);
-    const amount = item.reason === "OOR_BELOW_PERCENT" ? available : token;
+    const amount = loss ? available : token;
     if (amount < 0n || available < amount) throw new Error("Ledger token simulasi perlu rekonsiliasi");
     let received = 0n, swapGas = 0n, status = "SKIPPED_NO_TOKEN";
     if (amount > 0n) {
@@ -295,7 +297,7 @@ export class PaperAutomation {
          total_sol_returned,pnl_sol,pnl_pct,network_fees_sol,remaining_dust_usd,finalized_at)
         VALUES('dry_run',?,?,?,?,?,?,'automation_paper',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(journalId, item.pool, item.mint, item.bin_step,
           item.opened_at, item.opened_at, item.lower_bin, item.upper_bin, JSON.stringify(this.options.config), item.principal === null ? null : Number(item.principal) / 1e9,
-          Date.now(), item.reason, JSON.stringify({ sourcePositionId: item.source_id, model: "shadow liquidity; no market impact", sweepWallet: item.reason === "OOR_BELOW_PERCENT" }),
+          Date.now(), item.reason, JSON.stringify({ sourcePositionId: item.source_id, model: "shadow liquidity; no market impact", sweepWallet: loss }),
           Number(sol) / 1e9, token.toString(), status, Number(positionOut) / 1e9, Number(sol + positionOut) / 1e9, profit === null ? null : Number(profit) / 1e9,
           profit === null || !item.principal || BigInt(item.principal) === 0n ? null : Number(profit * 1_000_000n / BigInt(item.principal)) / 10_000,
           Number(BigInt(item.entry_gas) + gas + swapGas) / 1e9, null, Date.now());
@@ -304,7 +306,7 @@ export class PaperAutomation {
       completed = true;
     });
     if (!completed) return;
-    if (item.reason === "OOR_ABOVE_PERCENT") setMeta(this.options.db, "automation_preferred_pool", item.pool);
+    if (item.reason === "OOR_ABOVE_BINS" || item.reason === "OOR_ABOVE_PERCENT") setMeta(this.options.db, "automation_preferred_pool", item.pool);
     this.lastScreen = 0;
     const principal = item.principal === null ? null : BigInt(item.principal);
     await this.notifyPosition("🟡 CLOSE SIMULASI SELESAI", item, [
@@ -314,7 +316,7 @@ export class PaperAutomation {
       { label: "Swap", value: swapStatusLabel(status) },
       ...(received > 0n ? [{ label: "SOL swap posisi estimasi", value: notificationSol(positionOut) }] : []),
       ...(status === "SKIPPED_DUST" ? ["Token dust tetap disimpan; tanpa gas swap dan tanpa kredit SOL."] : []),
-      ...(item.reason === "OOR_BELOW_PERCENT" ? [
+      ...(loss ? [
         { label: "Hasil saldo lama estimasi", value: notificationSol(received - positionOut) },
         "Saldo token lama tidak dihitung sebagai profit posisi.",
         "Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",

@@ -79,12 +79,29 @@ test("SPOT range stays on SOL side in either orientation and approaches -80% wit
   assert.throws(() => spotRange(0, 80, false, -100));
 });
 
-test("exit percentages compound from range boundaries in both orientations and require fresh prices", () => {
+test("OOR exits count bins from range boundaries in both orientations regardless of bin step", () => {
+  for (const step of [25, 80, 1000]) {
+    for (const solIsX of [false, true]) {
+      const input = { active: 0, lower: -100, upper: -50, step, solIsX,
+        principal: 10000n, profit: 0n, ignored: false, at: Date.now() };
+      for (const distance of [0, 1, 9, 10, 11]) {
+        input.active = solIsX ? input.lower - distance : input.upper + distance;
+        assert.equal(exitReason(input, config().automation), distance >= 10 ? "OOR_ABOVE_BINS" : undefined);
+      }
+      for (const distance of [0, 1, 19, 20, 21]) {
+        input.active = solIsX ? input.upper + distance : input.lower - distance;
+        assert.equal(exitReason(input, config().automation), distance >= 20 ? "OOR_BELOW_BINS" : undefined);
+      }
+    }
+  }
+});
+
+test("OOR exits precede take-profit and require valid fresh bins and enabled exits", () => {
   for (const solIsX of [false, true]) {
-    const input = { active: solIsX ? -1 : 11, lower: 0, upper: 10, step: 1000, solIsX, principal: 10000n, profit: 500n, ignored: false, at: Date.now() };
-    assert.equal(exitReason(input, config().automation), "OOR_ABOVE_PERCENT");
-    input.active = solIsX ? 14 : -4;
-    assert.equal(exitReason(input, config().automation), "OOR_BELOW_PERCENT");
+    const input = { active: solIsX ? -10 : 20, lower: 0, upper: 10, solIsX, principal: 10000n, profit: 500n, ignored: false, at: Date.now() };
+    assert.equal(exitReason(input, config().automation), "OOR_ABOVE_BINS");
+    input.active = solIsX ? 30 : -20;
+    assert.equal(exitReason(input, config().automation), "OOR_BELOW_BINS");
     input.active = 5;
     assert.equal(exitReason(input, config().automation), "TAKE_PROFIT");
     input.profit = 499n;
@@ -93,6 +110,11 @@ test("exit percentages compound from range boundaries in both orientations and r
     assert.equal(exitReason(input, config().automation), undefined);
     input.at = Date.now(); input.ignored = true;
     assert.equal(exitReason(input, config().automation), undefined);
+    input.ignored = false;
+    for (const invalid of [{ at: Date.now() + 60_000 }, { active: NaN }, { active: 1.5 },
+      { lower: NaN }, { upper: Infinity }, { lower: 11, upper: 10 }]) {
+      assert.equal(exitReason({ ...input, ...invalid }, config().automation), undefined);
+    }
   }
   assert.equal(swapAllowed(199999n, 0.2), false);
   assert.equal(swapAllowed(200000n, 0.2), true);
@@ -152,7 +174,7 @@ test("blacklisting open virtual and manual positions preserves exits and prevent
   assert.equal(h.calls.entry, 1);
   assert.equal(h.automation.list().length, 0);
   assert.equal(h.automation.list(false).length, 2);
-  assert.ok(h.automation.list(false).every((item) => item.state === "CLOSED" && item.reason === "OOR_ABOVE_PERCENT"));
+  assert.ok(h.automation.list(false).every((item) => item.state === "CLOSED" && item.reason === "OOR_ABOVE_BINS"));
   assert.equal(h.db.prepare("SELECT state FROM positions").get()!.state, "OPEN");
 });
 
@@ -184,11 +206,14 @@ test("upper OOR replaces a virtual position in the same eligible pool before low
   const h = harness(t); h.candidates();
   await h.automation.tick();
   const first = h.automation.list()[0];
-  h.snapshot.active = 13;
+  h.snapshot.active = 9;
   h.candidates([{ address: key(20), mint: key(21), symbol: "OTHER", binStep: 80 }, { address: pool, mint, symbol: "TOKEN", binStep: 80 }]);
   h.cfg.automation.max_positions = 1;
   await h.automation.tick();
-  assert.equal(h.automation.list(false).find((row) => row.id === first.id)?.reason, "OOR_ABOVE_PERCENT");
+  assert.equal(h.automation.list()[0].id, first.id);
+  h.snapshot.active = 10;
+  await h.automation.tick();
+  assert.equal(h.automation.list(false).find((row) => row.id === first.id)?.reason, "OOR_ABOVE_BINS");
   assert.equal(h.automation.list()[0].pool, pool);
   assert.notEqual(h.automation.list()[0].id, first.id);
   assert.equal(h.automation.blocks().length, 0);
@@ -217,10 +242,15 @@ test("unknown/nonzero entry fees release the reservation without changing simula
 });
 
 test("lower OOR loss sweeps the full wallet, excludes old balance from profit and leaves the real position OPEN", async (t) => {
-  const h = harness(t); h.real(); h.snapshot.active = -50;
+  const h = harness(t); h.real(); h.snapshot.active = -19;
+  await h.automation.tick();
+  assert.equal(h.automation.list().length, 0);
+  assert.equal(h.delta(), 0n);
+  h.calls.quotes = [];
+  h.snapshot.active = -20;
   await h.automation.tick();
   const paper = h.automation.list(false)[0];
-  assert.equal(paper.state, "CLOSED"); assert.equal(paper.reason, "OOR_BELOW_PERCENT");
+  assert.equal(paper.state, "CLOSED"); assert.equal(paper.reason, "OOR_BELOW_BINS");
   assert.deepEqual(h.calls.quotes, [300n]);
   assert.deepEqual(h.automation.blocks().map((item) => item.mint), [mint]);
   assert.equal(h.delta(mint), -200n);
@@ -249,6 +279,32 @@ test("failed swap resumes after restart without reclosing or double crediting an
   assert.equal(h.db.prepare("SELECT count(*) n FROM trade_history").get()!.n, 1);
 });
 
+test("pending legacy percentage exits retain wallet sweeps and preferred reentry without rewriting history", async (t) => {
+  for (const reason of ["OOR_BELOW_PERCENT", "OOR_ABOVE_PERCENT"]) {
+    const h = harness(t); h.real(); h.snapshot.active = reason === "OOR_BELOW_PERCENT" ? -50 : 30;
+    h.cfg.automation.max_positions = 1;
+    h.calls.failQuote = true;
+    t.mock.method(console, "warn", () => {});
+    await h.automation.tick();
+    const pending = h.automation.list()[0];
+    assert.equal(pending.state, "CLOSING");
+    h.db.prepare("UPDATE automation_positions SET reason=? WHERE id=?").run(reason, pending.id);
+    h.db.prepare("UPDATE automation_blocks SET reason=?").run(reason);
+    h.calls.failQuote = false; h.calls.quotes = [];
+    const recovered = new PaperAutomation(h.options);
+    await recovered.tick(); await recovered.tick();
+    assert.deepEqual(h.calls.quotes, [reason === "OOR_BELOW_PERCENT" ? 300n : 100n]);
+    assert.equal(h.calls.holding, 1);
+    const trade = h.db.prepare("SELECT trigger_reason,trigger_detail FROM trade_history").get()!;
+    assert.equal(trade.trigger_reason, reason);
+    assert.equal(JSON.parse(String(trade.trigger_detail)).sweepWallet, reason === "OOR_BELOW_PERCENT");
+    assert.equal(h.db.prepare("SELECT count(*) n FROM trade_history").get()!.n, 1);
+    assert.equal(h.db.prepare("SELECT count(*) n FROM transactions").get()!.n, 0);
+    if (reason === "OOR_ABOVE_PERCENT") assert.equal(h.db.prepare("SELECT value FROM meta WHERE key='automation_preferred_pool'").get()!.value, pool);
+    else assert.equal(recovered.blocks().length, 1);
+  }
+});
+
 test("close notifications follow committed states and never replay after completion", async (t) => {
   const h = harness(t); h.real(); h.snapshot.active = -50;
   const states: string[] = [];
@@ -268,9 +324,9 @@ test("close notifications follow committed states and never replay after complet
   assert.match(h.sent[1].text, /Quote simulasi berhasil/);
   assert.match(h.sent[1].text, /Posisi nyata tetap terbuka dan memakai slot/);
   assert.match(h.sent[1].text, /Saldo token lama tidak dihitung/);
-  assert.doesNotMatch(h.sent[1].text, /OOR_BELOW_PERCENT|DRY_RUN_QUOTED/);
+  assert.doesNotMatch(h.sent[1].text, /OOR_BELOW_BINS|DRY_RUN_QUOTED/);
   const closed = h.automation.list(false)[0];
-  await (h.automation as any).beginClose(closed, { sol: 1n, token: 1n }, "OOR_BELOW_PERCENT");
+  await (h.automation as any).beginClose(closed, { sol: 1n, token: 1n }, "OOR_BELOW_BINS");
   await (h.automation as any).finishClose(closed);
   await new PaperAutomation(h.options).tick();
   assert.equal(h.sent.length, 2);
@@ -377,7 +433,7 @@ test("automation config refuses LIVE, disabled swaps, unsafe slot counts and sub
     (c: any) => { c.automation.max_positions = 16; },
     (c: any) => { c.automation.min_bin_step = 79; },
     (c: any) => { c.automation.min_price_percent = -100; },
-    (c: any) => { c.automation.oor_below_percent = 100; },
+    (c: any) => { c.automation.oor_below_bins = 1.5; },
     (c: any) => { c.automation.profit_percent = 0.011; },
   ]) {
     const c = config(); change(c);
@@ -422,6 +478,11 @@ test("Telegram refuses LIVE while automation is active and retired settings cann
   assert.match((await handler.onCallback("golive:confirm"))!.text, /DRY-RUN/);
   assert.match((await handler.onCallback("config:section:oor"))!.text, /dihapus/);
   assert.match((await handler.onCommand("/auto", []))!.text, /SIMULASI/);
+  assert.match((await handler.onCommand("/auto", []))!.text, /OOR atas ≥10 bin · bawah ≥20 bin/);
+  const settings = (await handler.onCallback("config:section:automation"))!;
+  assert.match(settings.text, /automation\.oor_above_bins = 10/);
+  assert.match(settings.text, /automation\.oor_below_bins = 20/);
+  assert.doesNotMatch(settings.text, /oor_(above|below)_percent/);
   assert.match((await handler.onCommand("/tf", []))!.text, /dihapus/);
 });
 

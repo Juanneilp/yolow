@@ -115,7 +115,7 @@
     "min_bin_step": 80,
     "min_price_percent": -80,
     "profit_percent": 5,
-    "oor_above_percent": 10,
-    "oor_below_percent": 30
+    "oor_above_bins": 10,
+    "oor_below_bins": 20
   }
 }

@@ -5,7 +5,7 @@
 Yolow is a TypeScript Meteora DLMM monitor with dry-run SPOT automation and validated close/swap execution.
 
 - `src/main.ts` starts the application; `src/agent.ts` coordinates background jobs.
-- Features live in `automation/`, `config/`, `execution/`, `market-data/`, `positions/`, `telegram/`, `storage/`, and `journal/` under `src/`. Indicator and bin-count OOR engines are retired.
+- Features live in `automation/`, `config/`, `execution/`, `market-data/`, `positions/`, `telegram/`, `storage/`, and `journal/` under `src/`. Indicator and legacy OOR engines are retired; current bin-distance OOR rules live in `automation/`.
 - `test/` contains tests; `test/fixtures/` holds sanitized API examples.
 - Read `README.md`, `ARCHITECTURE.md`, `PRD.md`, `PRD_SECURITY.md`, and Telegram's `DESIGN_SYSTEM.md` for context.
 

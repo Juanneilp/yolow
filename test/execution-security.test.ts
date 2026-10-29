@@ -359,6 +359,29 @@ test("SEC 03 and SEC 04 recovery swaps live proceeds once despite earlier simula
   }));
 });
 
+test("SEC 05 rechecks bin thresholds in either SOL orientation and rejects old percentage signals", async (t) => {
+  const h = harness();
+  t.after(() => h.db.close());
+  let active = 0, solIsX = false;
+  t.mock.method(DLMM, "create", (async () => ({ getActiveBin: async () => ({ binId: active }),
+    tokenX: { mint: { address: solIsX ? solMint : mint } } })) as any);
+  for (solIsX of [false, true]) {
+    for (const reason of ["OOR_ABOVE_BINS", "OOR_BELOW_BINS"] as const) {
+      const threshold = reason === "OOR_ABOVE_BINS" ? 10 : 20;
+      const risingBins = (reason === "OOR_ABOVE_BINS") !== solIsX;
+      for (const distance of [threshold - 1, threshold, threshold + 1]) {
+        active = risingBins ? h.position.upperBinId + distance : h.position.lowerBinId - distance;
+        assert.equal(await (h.executor as any).recheckOor(h.position, { ...h.trigger, reason }), distance >= threshold);
+      }
+    }
+  }
+  for (const reason of ["OOR_ABOVE_PERCENT", "OOR_BELOW_PERCENT", "OOR_ABOVE", "OOR_BELOW"]) {
+    await h.executor.execute({ ...h.trigger, reason } as Trigger);
+    assert.equal(h.db.prepare("SELECT outcome FROM triggers ORDER BY id DESC LIMIT 1").get()!.outcome, "RETIRED_TRIGGER");
+  }
+  assert.equal(h.broadcasts.length, 0);
+});
+
 test("SEC 05 a fresh signal that expires during preparation is rejected before broadcast", async () => {
   await withPool(async () => {
     const h = harness();

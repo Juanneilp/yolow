@@ -1,6 +1,6 @@
 # Yolow product requirements
 
-Current scope: monitor one wallet's Meteora DLMM positions and run **DRY-RUN SPOT automation** through authorized Telegram controls. The previous RSI/BB/MACD indicator exit and bin-count OOR exit have been removed, including timers, overrides and `/tf` controls. Historical records remain readable. Top Trending is removed; Top Careless remains the shared screening source.
+Current scope: monitor one wallet's Meteora DLMM positions and run **DRY-RUN SPOT automation** through authorized Telegram controls. The previous RSI/BB/MACD indicator exit and legacy OOR engine have been removed, including timers, overrides and `/tf` controls. Current automation uses bin-distance OOR exits. Historical records remain readable. Top Trending is removed; Top Careless remains the shared screening source.
 
 ## Entry
 
@@ -18,11 +18,11 @@ Apply to virtual and actual manual TOKEN/SOL positions; honor ignore state. Actu
 
 | Priority | Trigger | Result |
 | --- | --- | --- |
-| 1 | Price ≤70% of lower range boundary | Simulate loss close; block mint until manual unblock; screen another token |
-| 2 | Price ≥110% of upper range boundary | Simulate close; prefer same pool only if all entry requirements still pass |
+| 1 | Lower OOR distance ≥20 bins from the crossed range boundary | Simulate loss close; block mint until manual unblock; screen another token |
+| 2 | Upper OOR distance ≥10 bins from the crossed range boundary | Simulate close; prefer same pool only if all entry requirements still pass |
 | 3 | Net SOL profit ≥5% of principal | Simulate close; select replacement through screening |
 
-OOR is price percentage from the crossed boundary. Compound bin steps and normalize for SOL on X/Y; no bin-count confirmation rule remains. Use fresh data only. Price feed is WS plus default 15-second fallback, exit evaluation every 15 seconds, profit valuation every 60 seconds, screening every five minutes or after close.
+OOR counts the current bin distance from the crossed boundary, inclusive at the threshold, independent of bin step. Normalize direction for token price in SOL on X/Y; invert bin direction when SOL is X. Do not count cumulative bin movements or use the entry bin. Parameters are `automation.oor_above_bins` (10) and `automation.oor_below_bins` (20), both safe positive integers; discard old percentage settings without converting their values. Pending percentage closes finish with their original sweep/reentry behavior; historical records are not rewritten. Old `oor_exit` controls remain retired. Use fresh data only. Price feed is WS plus default 15-second fallback, exit evaluation every 15 seconds, profit valuation every 60 seconds, screening every five minutes or after close.
 
 Net profit = close SOL + minimum SOL quote for position tokens + historical withdrawn/claimed SOL − principal − estimated entry/close/swap gas. Quotes include slippage; exclude rent and old wallet balances. Manual positions without a complete fresh basis cannot take profit automatically, but OOR still works in simulation. Existing PnL reminders are separate lifetime estimates before liquidation fees.
 

@@ -19,17 +19,15 @@ export function spotRange(active: number, step: number, solIsX: boolean, minimum
 }
 
 export function exitReason(input: {
-  active: number; lower: number; upper: number; step: number; solIsX: boolean;
+  active: number; lower: number; upper: number; solIsX: boolean;
   principal: bigint | null; profit: bigint | null; ignored: boolean; at: number;
 }, config: AppConfig["automation"], now = Date.now()): TriggerReason | undefined {
-  if (input.ignored || !fresh(input.at, now) || !Number.isSafeInteger(input.active) || !Number.isFinite(input.step) || input.step <= 0) return;
+  if (input.ignored || !fresh(input.at, now) || ![input.active, input.lower, input.upper].every(Number.isSafeInteger) || input.lower > input.upper) return;
   const direction = input.solIsX ? -1 : 1;
   const low = input.solIsX ? input.upper : input.lower;
   const high = input.solIsX ? input.lower : input.upper;
-  const lowRatio = Math.exp(direction * (input.active - low) * Math.log1p(input.step / 10_000));
-  const highRatio = Math.exp(direction * (input.active - high) * Math.log1p(input.step / 10_000));
-  if (lowRatio <= 1 - config.oor_below_percent / 100 + 1e-12) return "OOR_BELOW_PERCENT";
-  if (highRatio >= 1 + config.oor_above_percent / 100 - 1e-12) return "OOR_ABOVE_PERCENT";
+  if (direction * (low - input.active) >= config.oor_below_bins) return "OOR_BELOW_BINS";
+  if (direction * (input.active - high) >= config.oor_above_bins) return "OOR_ABOVE_BINS";
   if (input.principal !== null && input.principal > 0n && input.profit !== null &&
       input.profit * 10_000n >= input.principal * BigInt(Math.round(config.profit_percent * 100))) return "TAKE_PROFIT";
 }

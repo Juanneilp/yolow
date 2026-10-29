@@ -34,6 +34,31 @@ test("profit alert config defaults old files and validates hot updates", async (
   assert.throws(() => parseConfig(JSON.stringify(old)), /profit_alert must be an object/);
 });
 
+test("bin OOR settings replace old percentages, validate safe positive integers and hot-apply", async () => {
+  const old = JSON.parse(await readFile("config.example.json", "utf8"));
+  delete old.automation.oor_above_bins;
+  delete old.automation.oor_below_bins;
+  old.automation.oor_above_percent = 17;
+  old.automation.oor_below_percent = 45;
+  const config = parseConfig(JSON.stringify(old));
+  assert.equal(config.automation.oor_above_bins, 10);
+  assert.equal(config.automation.oor_below_bins, 20);
+  assert.equal("oor_above_percent" in config.automation, false);
+  assert.equal("oor_below_percent" in config.automation, false);
+  for (const field of ["oor_above_bins", "oor_below_bins"] as const) {
+    for (const value of [0, -1, 1.5, null, "10", Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(() => prepareConfigUpdate(config, `automation.${field}`, JSON.stringify(value)));
+    }
+    const update = prepareConfigUpdate(config, `automation.${field}`, "25");
+    assert.equal(update.restartRequired, false);
+    applyConfigInPlace(config, update.config);
+    assert.equal(config.automation[field], 25);
+  }
+  assert.throws(() => prepareConfigUpdate(config, "automation.oor_below_percent", "30"), /tidak ditemukan/);
+  old.automation.oor_above_bins = 12;
+  assert.equal(parseConfig(JSON.stringify(old)).automation.oor_above_bins, 12);
+});
+
 test("range status measures compounded OOR price distance from the crossed boundary", () => {
   assert.equal(positionRangeStatus(30, 10, 20, 25), "🔺 OOR atas 2,53% · jarak 10 bin");
   assert.equal(positionRangeStatus(0, 10, 20, 25), "🔻 OOR bawah 2,47% · jarak 10 bin");
@@ -52,12 +77,12 @@ test("range status measures compounded OOR price distance from the crossed bound
 
 test("config editor validates values and leaves the running config untouched until applied", async () => {
   const current = await exampleConfig();
-  const update = prepareConfigUpdate(current, "automation.oor_below_percent", "24");
-  assert.equal(current.automation.oor_below_percent, 30);
-  assert.equal(update.config.automation.oor_below_percent, 24);
-  assert.equal(update.oldValue, 30);
+  const update = prepareConfigUpdate(current, "automation.oor_below_bins", "24");
+  assert.equal(current.automation.oor_below_bins, 20);
+  assert.equal(update.config.automation.oor_below_bins, 24);
+  assert.equal(update.oldValue, 20);
   assert.equal(update.newValue, 24);
-  assert.throws(() => prepareConfigUpdate(current, "automation.oor_below_percent", "0"), /must be a number >= 0.01/);
+  assert.throws(() => prepareConfigUpdate(current, "automation.oor_below_bins", "0"), /must be a safe integer >= 1/);
   assert.throws(() => prepareConfigUpdate(current, "mode.dry_run", "false"), /tidak dapat diubah/);
   assert.throws(() => prepareConfigUpdate(current, "mode.shadow_candles", "false"), /belum diterapkan/);
   assert.throws(() => prepareConfigUpdate(current, "rpc.http_base.api_key", "secret"), /Secret/);
@@ -94,7 +119,7 @@ test("retired strategies are discarded and automation hot apply keeps references
 test("config editor flags settings that need process restart", () => {
   assert.equal(configUpdateNeedsRestart("mode.position_poll_interval_sec"), true);
   assert.equal(configUpdateNeedsRestart("rpc.http_base"), true);
-  assert.equal(configUpdateNeedsRestart("automation.oor_below_percent"), false);
+  assert.equal(configUpdateNeedsRestart("automation.oor_below_bins"), false);
 });
 
 test("config file is atomically replaced with validated JSON", async () => {
@@ -124,14 +149,14 @@ test("Telegram /config set persists, hot-applies, and audits a validated setting
     const menu = await handler.onCommand("/config", []);
     assert.match(menu?.text ?? "", /KONFIGURASI YOLOW/);
     assert.equal(menu?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data, "config:section:automation");
-    const reply = await handler.onCommand("/config", ["set", "automation.oor_below_percent", "23"]);
+    const reply = await handler.onCommand("/config", ["set", "automation.oor_below_bins", "23"]);
     assert.match(reply?.text ?? "", /CONFIG DISIMPAN/);
-    assert.equal(config.automation.oor_below_percent, 23);
+    assert.equal(config.automation.oor_below_bins, 23);
     const saved = parseConfig(await readFile(path, "utf8"));
-    assert.equal(saved.automation.oor_below_percent, 23);
+    assert.equal(saved.automation.oor_below_bins, 23);
     const audit = db.prepare("SELECT path,old_value,new_value FROM config_changes").get() as Record<string, string>;
-    assert.equal(audit.path, "automation.oor_below_percent");
-    assert.equal(audit.old_value, "30");
+    assert.equal(audit.path, "automation.oor_below_bins");
+    assert.equal(audit.old_value, "20");
     assert.equal(audit.new_value, "23");
     const records = await handler.onCallback("config:section:records");
     assert.match(records?.text ?? "", /notify\.profit_alert\.interval_minutes = 5/);

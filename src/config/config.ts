@@ -19,7 +19,7 @@ export type AppConfig = {
   };
   automation: {
     enabled: boolean; max_positions: number; position_sol: number; min_bin_step: number;
-    min_price_percent: number; profit_percent: number; oor_above_percent: number; oor_below_percent: number;
+    min_price_percent: number; profit_percent: number; oor_above_bins: number; oor_below_bins: number;
   };
   execution: { priority_fee: Record<string, any>; max_retries: number };
   swap: { enabled: boolean; output: "SOL"; min_value_usd: number; slippage_bps: number; max_slippage_bps: number; max_retries: number; close_empty_token_account: boolean };
@@ -99,8 +99,10 @@ export function parseConfig(text: string): AppConfig {
   delete candles.poll_interval_sec;
   if (config.automation === undefined) config.automation = {};
   const automation = object(config.automation, "automation");
+  delete automation.oor_above_percent;
+  delete automation.oor_below_percent;
   for (const [key, value] of Object.entries({ enabled: false, max_positions: 15, position_sol: 0.5,
-    min_bin_step: 80, min_price_percent: -80, profit_percent: 5, oor_above_percent: 10, oor_below_percent: 30 })) {
+    min_bin_step: 80, min_price_percent: -80, profit_percent: 5, oor_above_bins: 10, oor_below_bins: 20 })) {
     if (automation[key] === undefined) automation[key] = value;
   }
   if (typeof automation.enabled !== "boolean") throw new Error("automation.enabled must be boolean");
@@ -111,10 +113,12 @@ export function parseConfig(text: string): AppConfig {
   integer(automation.min_bin_step, "automation.min_bin_step", 80);
   number(-automation.min_price_percent, "negative automation.min_price_percent", 0.01);
   if (automation.min_price_percent <= -100) throw new Error("automation.min_price_percent must exceed -100");
-  for (const key of ["profit_percent", "oor_above_percent", "oor_below_percent"]) number(automation[key], `automation.${key}`, 0.01);
+  number(automation.profit_percent, "automation.profit_percent", 0.01);
+  for (const key of ["oor_above_bins", "oor_below_bins"]) {
+    if (!Number.isSafeInteger(automation[key]) || automation[key] < 1) throw new Error(`automation.${key} must be a safe integer >= 1`);
+  }
   const profitBps = Math.round(automation.profit_percent * 100);
   if (!Number.isSafeInteger(profitBps) || Math.abs(profitBps - automation.profit_percent * 100) > 1e-7) throw new Error("automation.profit_percent must use at most two decimals");
-  if (automation.oor_below_percent >= 100) throw new Error("automation.oor_below_percent must be below 100");
   if (automation.enabled && !mode.dry_run) throw new Error("Automation currently requires DRY-RUN");
   const swap = object(config.swap, "swap");
   if (config.top_careless === undefined) config.top_careless = {};

@@ -20,7 +20,7 @@ flowchart LR
 | --- | --- |
 | `src/main.ts` | Validate credentials/config, refuse automation with persisted LIVE, load signer only for existing LIVE execution, graceful shutdown |
 | `src/agent.ts` | Discovery, active-bin feed, automation, PnL reminders, snapshots, exports and backups |
-| `src/automation/rules.ts` | Integer SOL amounts, orientation-aware SPOT range, percent OOR/net profit priority, freshness and dust threshold |
+| `src/automation/rules.ts` | Integer SOL amounts, orientation-aware SPOT range, bin-distance OOR/net profit priority, freshness and dust threshold |
 | `src/automation/market.ts` | Read-only DLMM cost/bin/holding data, Jupiter quotes, shadow shares/fee model; no signing/broadcast |
 | `src/automation/automation.ts` | Reservations, slot budget, virtual entry, manual/virtual simulated closes, ledger, pending swaps, loss blocks and recovery |
 | `src/positions/monitor.ts` | Actual on-chain discovery and persisted ignore state |
@@ -39,7 +39,7 @@ The manual blacklist is a validated `top_careless.blacklisted_mints` array, defa
 
 Virtual positions persist bin shares, opening allocation, fee baselines and refundable rent. Current bin balances and fee accumulators estimate SOL/token holdings. Empty bins use ideal fills at bin prices. This model omits market impact and cannot reproduce an actual LP position exactly; it is restricted to dry-run. Manual profit requires fresh Meteora deposit/withdrawal/claimed-fee basis plus read-only SDK holdings and conservative liquidation quotes.
 
-Exit priority is lower OOR loss, upper OOR, net SOL take-profit. OPEN → CLOSING atomically records holdings, credits close proceeds/rent minus gas and blocks a loss mint. CLOSING persists while the quote fails; recovery retries only the swap. Loss swaps include the whole wallet mint balance; journal profit allocates only the position share. Dust leaves token balances unchanged and credits no SOL. CLOSING → CLOSED atomically debits swapped tokens, credits net SOL and writes a unique `paper:<uuid>` journal row. No actual position is marked CLOSED by this flow.
+Exit priority is lower OOR loss at ≥20 bins, upper OOR at ≥10 bins, then net SOL take-profit at ≥5%. Bin distances use token/SOL price direction and invert for SOL on X. Executor rechecks reuse the shared exit rule. Legacy percentage CLOSING rows retain sweep/reentry semantics without rewriting history; new percentage triggers are rejected. OPEN → CLOSING atomically records holdings, credits close proceeds/rent minus gas and blocks a loss mint. CLOSING persists while the quote fails; recovery retries only the swap. Loss swaps include the whole wallet mint balance; journal profit allocates only the position share. Dust leaves token balances unchanged and credits no SOL. CLOSING → CLOSED atomically debits swapped tokens, credits net SOL and writes a unique `paper:<uuid>` journal row. No actual position is marked CLOSED by this flow.
 
 Paper tables are `automation_positions`, `automation_balances`, `automation_blocks` and `automation_events`; preferred upper-OOR reentry is persisted in meta. Reservations without a committed debit are cleared after restart. OPEN/CLOSING positions, models, offsets and blocks are retained. Legacy signals/candles/triggers remain historical records; their engines, timers and editable config have been removed.
 
