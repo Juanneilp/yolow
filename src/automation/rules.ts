@@ -27,6 +27,8 @@ export function exitReason(input: {
   const low = input.solIsX ? input.upper : input.lower;
   const high = input.solIsX ? input.lower : input.upper;
   if (direction * (low - input.active) >= config.oor_below_bins) return "OOR_BELOW_BINS";
+  if (input.principal !== null && input.principal > 0n && input.profit !== null &&
+      input.profit * 10_000n <= -input.principal * BigInt(Math.round(config.stop_loss_percent * 100))) return "STOP_LOSS";
   if (direction * (input.active - high) >= config.oor_above_bins) return "OOR_ABOVE_BINS";
   if (input.principal !== null && input.principal > 0n && input.profit !== null &&
       input.profit * 10_000n >= input.principal * BigInt(Math.round(config.profit_percent * 100))) return "TAKE_PROFIT";

@@ -186,7 +186,7 @@ Snapshot harga dan quote exit baru harus bertimestamp valid, tidak di masa depan
 - Maksimum 15 termasuk posisi manual/ignored dan reservasi; ulangi discovery sebelum commit entry. Mint/pool aktif tidak boleh ganda.
 - Tolak biaya pembukaan non-refundable yang tidak nol atau tidak diketahui, termasuk bin array, bitmap, composition fee dan ekstensi token yang tidak didukung.
 - Batas swap minimum $0,20 berlaku pada semua swap. Dust tidak membayar gas swap dan tidak dihitung SOL.
-- **Pengecualian yang diotorisasi pengguna:** setelah loss OOR bawah, sweep seluruh saldo wallet untuk mint tersebut, termasuk saldo lama. Ledger/jurnal memisahkan hasil saldo lama dari profit LP. Pengaman lama yang membatasi swap hasil close tetap berlaku pada executor LIVE; sweep ini hanya simulasi.
+- **Pengecualian yang diotorisasi pengguna:** setelah loss OOR bawah atau stop-loss PnL neto, sweep seluruh saldo wallet untuk mint tersebut, termasuk saldo lama. Ledger/jurnal memisahkan hasil saldo lama dari profit LP. Pengaman lama yang membatasi swap hasil close tetap berlaku pada executor LIVE; sweep ini hanya simulasi.
 - Blokir mint loss sampai manual unblock. Swap gagal tetap CLOSING; blokir tidak dapat dibuka saat sweep belum selesai. Reservation tanpa debit dibersihkan saat startup; OPEN/CLOSING/ledger tetap persisten.
 - ID paper terpisah dari posisi nyata. Simulasi close tidak menandai posisi nyata CLOSED dan tidak membebaskan slot nyata.
 

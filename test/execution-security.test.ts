@@ -375,7 +375,7 @@ test("SEC 05 rechecks bin thresholds in either SOL orientation and rejects old p
       }
     }
   }
-  for (const reason of ["OOR_ABOVE_PERCENT", "OOR_BELOW_PERCENT", "OOR_ABOVE", "OOR_BELOW"]) {
+  for (const reason of ["STOP_LOSS", "OOR_ABOVE_PERCENT", "OOR_BELOW_PERCENT", "OOR_ABOVE", "OOR_BELOW"]) {
     await h.executor.execute({ ...h.trigger, reason } as Trigger);
     assert.equal(h.db.prepare("SELECT outcome FROM triggers ORDER BY id DESC LIMIT 1").get()!.outcome, "RETIRED_TRIGGER");
   }

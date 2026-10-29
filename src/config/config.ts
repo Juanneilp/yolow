@@ -19,7 +19,7 @@ export type AppConfig = {
   };
   automation: {
     enabled: boolean; max_positions: number; position_sol: number; min_bin_step: number;
-    min_price_percent: number; profit_percent: number; oor_above_bins: number; oor_below_bins: number;
+    min_price_percent: number; profit_percent: number; stop_loss_percent: number; oor_above_bins: number; oor_below_bins: number;
   };
   execution: { priority_fee: Record<string, any>; max_retries: number };
   swap: { enabled: boolean; output: "SOL"; min_value_usd: number; slippage_bps: number; max_slippage_bps: number; max_retries: number; close_empty_token_account: boolean };
@@ -102,7 +102,7 @@ export function parseConfig(text: string): AppConfig {
   delete automation.oor_above_percent;
   delete automation.oor_below_percent;
   for (const [key, value] of Object.entries({ enabled: false, max_positions: 15, position_sol: 0.5,
-    min_bin_step: 80, min_price_percent: -80, profit_percent: 5, oor_above_bins: 10, oor_below_bins: 20 })) {
+    min_bin_step: 80, min_price_percent: -80, profit_percent: 5, stop_loss_percent: 50, oor_above_bins: 10, oor_below_bins: 20 })) {
     if (automation[key] === undefined) automation[key] = value;
   }
   if (typeof automation.enabled !== "boolean") throw new Error("automation.enabled must be boolean");
@@ -114,6 +114,10 @@ export function parseConfig(text: string): AppConfig {
   number(-automation.min_price_percent, "negative automation.min_price_percent", 0.01);
   if (automation.min_price_percent <= -100) throw new Error("automation.min_price_percent must exceed -100");
   number(automation.profit_percent, "automation.profit_percent", 0.01);
+  number(automation.stop_loss_percent, "automation.stop_loss_percent", 0.01);
+  if (automation.stop_loss_percent > 100) throw new Error("automation.stop_loss_percent must not exceed 100");
+  const lossBps = Math.round(automation.stop_loss_percent * 100);
+  if (Math.abs(lossBps - automation.stop_loss_percent * 100) > 1e-7) throw new Error("automation.stop_loss_percent must use at most two decimals");
   for (const key of ["oor_above_bins", "oor_below_bins"]) {
     if (!Number.isSafeInteger(automation[key]) || automation[key] < 1) throw new Error(`automation.${key} must be a safe integer >= 1`);
   }

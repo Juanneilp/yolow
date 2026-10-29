@@ -59,6 +59,22 @@ test("bin OOR settings replace old percentages, validate safe positive integers 
   assert.equal(parseConfig(JSON.stringify(old)).automation.oor_above_bins, 12);
 });
 
+test("stop-loss defaults old configs, validates percentages and hot-applies", async () => {
+  const raw = JSON.parse(await readFile("config.example.json", "utf8"));
+  delete raw.automation.stop_loss_percent;
+  const config = parseConfig(JSON.stringify(raw));
+  assert.equal(config.automation.stop_loss_percent, 50);
+  for (const value of [0, -50, 100.01, 0.001, 50.001, null, "50"]) {
+    assert.throws(() => prepareConfigUpdate(config, "automation.stop_loss_percent", JSON.stringify(value)));
+  }
+  for (const value of [0.01, 45.25, 100]) {
+    const update = prepareConfigUpdate(config, "automation.stop_loss_percent", String(value));
+    assert.equal(update.restartRequired, false);
+    applyConfigInPlace(config, update.config);
+    assert.equal(config.automation.stop_loss_percent, value);
+  }
+});
+
 test("range status measures compounded OOR price distance from the crossed boundary", () => {
   assert.equal(positionRangeStatus(30, 10, 20, 25), "🔺 OOR atas 2,53% · jarak 10 bin");
   assert.equal(positionRangeStatus(0, 10, 20, 25), "🔻 OOR bawah 2,47% · jarak 10 bin");

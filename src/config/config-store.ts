@@ -13,7 +13,7 @@ export type ConfigUpdate = {
 
 export const editablePaths = new Set([
   "automation.enabled", "automation.max_positions", "automation.position_sol", "automation.min_bin_step",
-  "automation.min_price_percent", "automation.profit_percent", "automation.oor_above_bins", "automation.oor_below_bins",
+  "automation.min_price_percent", "automation.profit_percent", "automation.stop_loss_percent", "automation.oor_above_bins", "automation.oor_below_bins",
   "top_careless.enabled", "top_careless.limit", "top_careless.min_market_cap_usd", "top_careless.min_token_age_days", "top_careless.min_tvl_usd",
   "top_careless.blacklisted_mints",
   "execution.max_retries", "execution.priority_fee.microlamports", "execution.priority_fee.max_cap_microlamports",

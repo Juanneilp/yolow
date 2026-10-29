@@ -120,6 +120,26 @@ test("OOR exits precede take-profit and require valid fresh bins and enabled exi
   assert.equal(swapAllowed(200000n, 0.2), true);
 });
 
+test("stop-loss uses each principal, includes the exact threshold, and precedes upper OOR", () => {
+  const cfg = config().automation;
+  const input = { active: 5, lower: 0, upper: 10, solIsX: false, principal: 500000000n,
+    profit: -249950000n, ignored: false, at: Date.now() };
+  assert.equal(exitReason(input, cfg), undefined);
+  for (const principal of [500000000n, 1000000000n]) {
+    for (const loss of [principal / 2n, principal / 2n + 1n]) {
+      assert.equal(exitReason({ ...input, principal, profit: -loss }, cfg), "STOP_LOSS");
+    }
+  }
+  for (const solIsX of [false, true]) {
+    const loss = { ...input, solIsX, profit: -250000000n };
+    assert.equal(exitReason({ ...loss, active: solIsX ? -10 : 20 }, cfg), "STOP_LOSS");
+    assert.equal(exitReason({ ...loss, active: solIsX ? 30 : -20 }, cfg), "OOR_BELOW_BINS");
+  }
+  for (const changed of [{ principal: null }, { principal: 0n }, { profit: null }, { ignored: true }, { at: Date.now() - 120001 }]) {
+    assert.equal(exitReason({ ...input, profit: -250000000n, ...changed }, cfg), undefined);
+  }
+});
+
 test("paper liquidity uses integer shares, accrues only new fees, and preserves empty active-bin allocation", () => {
   const model = paperModel([bin], [{ binId: 0, amountX: new BN(0), amountY: new BN(500000000) }]);
   const snapshot = { at: Date.now(), active: 0, step: 80, solIsX: false, mint, bins: [bin] };
@@ -263,6 +283,108 @@ test("lower OOR loss sweeps the full wallet, excludes old balance from profit an
   const recovered = new PaperAutomation(h.options);
   await recovered.tick(); assert.deepEqual(h.calls.quotes, [300n]);
   recovered.unblock(mint); assert.equal(recovered.blocks().length, 0);
+});
+
+test("manual stop-loss sweeps old tokens, blocks reentry and recovers a failed swap exactly once", async (t) => {
+  const h = harness(t); h.real(); h.candidates();
+  h.market.holding = async () => { h.calls.holding++; return { sol: 150050004n, token: 100n, rent: 10n }; };
+  await h.automation.tick();
+  assert.equal(h.automation.list().length, 0);
+  h.market.holding = async () => { h.calls.holding++; return { sol: 150000004n, token: 100n, rent: 10n }; };
+  const quote = h.market.quote;
+  let failSweep = true;
+  h.market.quote = async (mint, amount) => {
+    if (amount === 300n && failSweep) throw new Error("sweep unavailable");
+    return quote(mint, amount);
+  };
+  t.mock.method(console, "warn", () => {});
+  (h.automation as any).lastValuation = 0;
+  await h.automation.tick();
+  assert.equal(h.automation.list()[0].reason, "STOP_LOSS");
+  assert.equal(h.automation.list()[0].state, "CLOSING");
+  assert.throws(() => h.automation.unblock(mint), /belum selesai/);
+  assert.match(h.sent[0].text, /Stop loss PnL neto/);
+  failSweep = false;
+  const recovered = new PaperAutomation(h.options);
+  await recovered.tick(); await recovered.tick();
+  assert.equal(h.calls.holding, 2);
+  assert.equal(h.calls.entry, 0);
+  assert.equal(h.delta(mint), -200n);
+  assert.equal(recovered.blocks()[0].mint, mint);
+  const trade = h.db.prepare("SELECT * FROM trade_history").get()!;
+  assert.equal(trade.trigger_reason, "STOP_LOSS");
+  assert.equal(trade.pnl_sol, -0.25);
+  assert.equal(JSON.parse(String(trade.trigger_detail)).sweepWallet, true);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM trade_history").get()!.n, 1);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM transactions").get()!.n, 0);
+  assert.equal(h.db.prepare("SELECT state FROM positions").get()!.state, "OPEN");
+});
+
+test("virtual stop-loss closes in range and cannot reopen the blocked mint", async (t) => {
+  const h = harness(t); h.candidates();
+  await h.automation.tick();
+  h.snapshot.bins = [{ ...bin, supply: (1000000000n << 64n).toString(), y: "500000004" }];
+  (h.automation as any).lastValuation = 0;
+  await h.automation.tick();
+  assert.equal(h.automation.list().length, 0);
+  assert.equal(h.automation.list(false)[0].reason, "STOP_LOSS");
+  assert.equal(h.calls.entry, 1);
+  assert.deepEqual(h.calls.quotes, [200n]);
+  assert.equal(h.automation.blocks()[0].mint, mint);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM transactions").get()!.n, 0);
+});
+
+test("stop-loss overrides upper OOR but unavailable valuation preserves the OOR close", async (t) => {
+  for (const unavailable of [false, true]) {
+    const h = harness(t); h.real(); h.snapshot.active = 5;
+    let sol = 350000000n;
+    h.market.holding = async () => ({ sol, token: 100n });
+    const quote = h.market.quote;
+    h.market.quote = async (mint, amount) => {
+      if (unavailable && h.snapshot.active === 20 && amount === 100n) throw new Error("valuation unavailable");
+      return quote(mint, amount);
+    };
+    t.mock.method(console, "warn", () => {});
+    await h.automation.tick();
+    assert.equal(h.automation.list(false).length, 0);
+    sol = 100000000n; h.snapshot.active = 20;
+    await h.automation.tick();
+    assert.equal(h.automation.list(false)[0].reason, unavailable ? "OOR_ABOVE_BINS" : "STOP_LOSS");
+    assert.equal(h.automation.blocks().length, unavailable ? 0 : 1);
+  }
+});
+
+test("stop-loss ignores missing bases, stale data, failed quotes and disabled exits", async (t) => {
+  for (const failure of ["basis", "stale", "quote", "ignored", "disabled", "live", "staleBasis", "staleSnapshot"]) {
+    const h = harness(t); h.real();
+    h.market.holding = async () => ({ sol: 0n, token: 100n });
+    if (failure === "basis") h.options.pnl.refresh = async () => new Map();
+    if (failure === "stale") h.market.quote = async () => ({ sol: 1n, gas: 1n, valueMicrousd: 200000n, at: Date.now() - 120001 });
+    if (failure === "quote") h.calls.failQuote = true;
+    if (failure === "ignored") h.db.prepare("UPDATE positions SET ignored=1").run();
+    if (failure === "disabled") h.cfg.automation.enabled = false;
+    if (failure === "live") setMeta(h.db, "dry_run", "false");
+    if (failure === "staleBasis") h.options.pnl.refresh = async () => new Map([[pool, { fetchedAt: Date.now() - 120001,
+      positions: new Map([[source, { deposits: 0.5, withdrawals: 0, claimed: 0 }]]) }]]) as any;
+    if (failure === "staleSnapshot") h.market.snapshot = async () => ({ ...h.snapshot, at: Date.now() - 120001 });
+    t.mock.method(console, "warn", () => {});
+    await h.automation.tick();
+    assert.equal(h.automation.list().length, 0);
+    assert.equal(h.delta(), 0n);
+    assert.equal(h.automation.blocks().length, 0);
+  }
+});
+
+test("stop-loss data expiring during the balance read cannot start a close", async (t) => {
+  const h = harness(t); h.real();
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  h.market.holding = async () => ({ sol: 0n, token: 100n });
+  h.market.walletSol = async () => { now += 120001; return 20000000000n; };
+  await h.automation.tick();
+  assert.equal(h.automation.list()[0].state, "OPEN");
+  assert.equal(h.delta(), 0n);
+  assert.equal(h.automation.blocks().length, 0);
 });
 
 test("failed swap resumes after restart without reclosing or double crediting and cannot unblock prematurely", async (t) => {
@@ -479,9 +601,11 @@ test("Telegram refuses LIVE while automation is active and retired settings cann
   assert.match((await handler.onCallback("config:section:oor"))!.text, /dihapus/);
   assert.match((await handler.onCommand("/auto", []))!.text, /SIMULASI/);
   assert.match((await handler.onCommand("/auto", []))!.text, /OOR atas ≥10 bin · bawah ≥20 bin/);
+  assert.match((await handler.onCommand("/auto", []))!.text, /Stop loss PnL neto ≤−50%/);
   const settings = (await handler.onCallback("config:section:automation"))!;
   assert.match(settings.text, /automation\.oor_above_bins = 10/);
   assert.match(settings.text, /automation\.oor_below_bins = 20/);
+  assert.match(settings.text, /automation\.stop_loss_percent = 50/);
   assert.doesNotMatch(settings.text, /oor_(above|below)_percent/);
   assert.match((await handler.onCommand("/tf", []))!.text, /dihapus/);
 });

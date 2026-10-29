@@ -26,7 +26,7 @@ export type Position = {
   activeBin?: number;
 };
 
-export type TriggerReason = "TAKE_PROFIT" | "OOR_BELOW_BINS" | "OOR_ABOVE_BINS";
+export type TriggerReason = "TAKE_PROFIT" | "STOP_LOSS" | "OOR_BELOW_BINS" | "OOR_ABOVE_BINS";
 
 export type Trigger = {
   positionId: string;

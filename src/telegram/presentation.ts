@@ -103,6 +103,7 @@ export function binStepLabel(binStep: number | undefined, baseFeePercent?: numbe
 export function triggerReasonLabel(reason: string): string {
   return ({
     TAKE_PROFIT: "Target profit neto",
+    STOP_LOSS: "Stop loss PnL neto",
     OOR_ABOVE_BINS: "OOR atas jumlah bin",
     OOR_BELOW_BINS: "Stop loss OOR bawah jumlah bin",
     OOR_ABOVE_PERCENT: "OOR atas persentase",
