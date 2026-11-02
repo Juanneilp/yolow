@@ -4,7 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import { YolowAgent } from "./agent.ts";
 import { parseConfig } from "./config/config.ts";
 import { loadSigner } from "./execution/executor.ts";
-import { getMeta, openDatabase } from "./storage/db.ts";
+import { getMeta, openDatabase, setMeta } from "./storage/db.ts";
 import { runBot } from "./telegram/bot.ts";
 import { createCommandHandler } from "./telegram/commands.ts";
 import { telegramApiBase } from "./security.ts";
