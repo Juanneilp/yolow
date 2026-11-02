@@ -11,6 +11,13 @@ export function fresh(at: number, now = Date.now()): boolean {
   return Number.isSafeInteger(at) && at <= now && now - at <= 120_000;
 }
 
+export const LOWER_OOR_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+export function belowRange(input: { active: number; lower: number; upper: number; solIsX: boolean }): boolean {
+  return [input.active, input.lower, input.upper].every(Number.isSafeInteger) && input.lower <= input.upper &&
+    (input.solIsX ? input.active > input.upper : input.active < input.lower);
+}
+
 export function spotRange(active: number, step: number, solIsX: boolean, minimumPercent: number): { lower: number; upper: number } {
   if (!Number.isSafeInteger(active) || !Number.isFinite(step) || step < 80 || minimumPercent <= -100 || minimumPercent >= 0) throw new Error("Range SPOT tidak valid");
   const width = -Math.ceil(Math.log1p(minimumPercent / 100) / Math.log1p(step / 10_000));
@@ -20,13 +27,14 @@ export function spotRange(active: number, step: number, solIsX: boolean, minimum
 
 export function exitReason(input: {
   active: number; lower: number; upper: number; solIsX: boolean;
-  principal: bigint | null; profit: bigint | null; ignored: boolean; at: number;
+  principal: bigint | null; profit: bigint | null; ignored: boolean; at: number; oorBelowMs?: number;
 }, config: AppConfig["automation"], now = Date.now()): TriggerReason | undefined {
   if (input.ignored || !fresh(input.at, now) || ![input.active, input.lower, input.upper].every(Number.isSafeInteger) || input.lower > input.upper) return;
   const direction = input.solIsX ? -1 : 1;
   const low = input.solIsX ? input.upper : input.lower;
   const high = input.solIsX ? input.lower : input.upper;
   if (direction * (low - input.active) >= config.oor_below_bins) return "OOR_BELOW_BINS";
+  if (belowRange(input) && Number.isSafeInteger(input.oorBelowMs) && input.oorBelowMs! >= LOWER_OOR_TIMEOUT_MS) return "OOR_BELOW_TIMEOUT";
   if (input.principal !== null && input.principal > 0n && input.profit !== null &&
       input.profit * 10_000n <= -input.principal * BigInt(Math.round(config.stop_loss_percent * 100))) return "STOP_LOSS";
   if (direction * (input.active - high) >= config.oor_above_bins) return "OOR_ABOVE_BINS";

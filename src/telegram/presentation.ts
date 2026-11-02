@@ -106,6 +106,7 @@ export function triggerReasonLabel(reason: string): string {
     STOP_LOSS: "Stop loss PnL neto",
     OOR_ABOVE_BINS: "OOR atas jumlah bin",
     OOR_BELOW_BINS: "Stop loss OOR bawah jumlah bin",
+    OOR_BELOW_TIMEOUT: "Close loss OOR bawah terus-menerus 24 jam",
     OOR_ABOVE_PERCENT: "OOR atas persentase",
     OOR_BELOW_PERCENT: "Stop loss OOR bawah",
     INDICATOR: "Sinyal indikator",

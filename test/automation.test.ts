@@ -725,3 +725,118 @@ test("SDK entry checks all bins, rejects bin-array/bitmap/composition/extension 
     bins: Array.from({ length: upper - lower + 1 }, (_, n) => ({ binId: lower + n, xAmount: new BN(100), yAmount: new BN(100), supply: new BN(100), feeAmountXPerTokenStored: new BN(0), feeAmountYPerTokenStored: new BN(0) })) }));
   await assert.rejects(market.entry(pool, 500000000n), /Composition/);
 });
+
+test("24h lower OOR is an additional inclusive trigger in both SOL orientations", () => {
+  const cfg = config().automation;
+  const hours = 24 * 3600000;
+  for (const solIsX of [false, true]) {
+    const input = { active: solIsX ? 11 : -1, lower: 0, upper: 10, solIsX, at: Date.now(), principal: 500n, profit: 0n, ignored: false };
+    assert.equal(exitReason({ ...input, oorBelowMs: hours - 1 }, cfg), undefined);
+    assert.equal(exitReason({ ...input, oorBelowMs: hours }, cfg), "OOR_BELOW_TIMEOUT");
+    assert.equal(exitReason({ ...input, active: solIsX ? 30 : -20, oorBelowMs: hours }, cfg), "OOR_BELOW_BINS");
+    assert.equal(exitReason({ ...input, active: 5, oorBelowMs: hours }, cfg), undefined);
+    assert.equal(exitReason({ ...input, ignored: true, oorBelowMs: hours }, cfg), undefined);
+    assert.equal(exitReason({ ...input, at: Date.now()-120001, oorBelowMs: hours }, cfg), undefined);
+    for (const value of [NaN, Infinity, -1, 1.5]) assert.equal(exitReason({ ...input, oorBelowMs: value }, cfg), undefined);
+  }
+});
+
+test("lower OOR timer persists a short restart and resets on recovery, stale feeds, long gaps or range changes", async (t) => {
+  const h = harness(t); h.real();
+  h.cfg.rpc.oor_fallback_poll_interval_sec = 1;
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  h.snapshot.active = -1;
+  await h.automation.tick();
+  const original = now;
+  now += 15000;
+  await new PaperAutomation(h.options).tick();
+  assert.equal(h.db.prepare("SELECT since_at FROM automation_lower_oor WHERE position_id=?").get(source)!.since_at, original);
+  h.snapshot.active = 0; now += 15000;
+  await h.automation.tick();
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_lower_oor").get()!.n, 0);
+  h.snapshot.active = -1; now += 15000; await h.automation.tick();
+  now += 30001; await h.automation.tick();
+  assert.equal(h.db.prepare("SELECT since_at FROM automation_lower_oor").get()!.since_at, now);
+  now += 15000; h.options.price = () => ({ ...h.snapshot, at: now-120001 });
+  await h.automation.tick();
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_lower_oor").get()!.n, 0);
+  h.options.price = () => ({ ...h.snapshot, at: now });
+  await h.automation.tick();
+  h.db.prepare("UPDATE positions SET lower_bin_id=-1,upper_bin_id=9").run();
+  await h.automation.tick();
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_lower_oor").get()!.n, 0);
+  h.snapshot.active = -2; now += 15000; await h.automation.tick();
+  h.db.prepare("UPDATE positions SET ignored=1").run();
+  await h.automation.tick();
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_lower_oor").get()!.n, 0);
+});
+
+test("24h lower OOR closes a manual position as loss and sweeps ALL wallet tokens to SOL", async (t) => {
+  const h = harness(t); h.real(); h.snapshot.active = -1;
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  await h.automation.tick();
+  h.db.prepare("UPDATE automation_lower_oor SET since_at=? WHERE position_id=?").run(now-24*3600000+15000, source);
+  h.calls.quotes=[];
+  now += 14999; await h.automation.tick();
+  assert.equal(h.automation.list(false).length, 0);
+  now++;
+  const feedAt = now;
+  h.options.price = () => ({ ...h.snapshot, at: feedAt });
+  const snapshot = h.market.snapshot;
+  h.market.snapshot = async (...args) => { const value = await snapshot(...args); now += 500; return { ...value, at: now }; };
+  await h.automation.tick();
+  assert.equal(h.automation.list(false)[0].reason, "OOR_BELOW_TIMEOUT");
+  assert.equal(h.automation.list(false)[0].state, "CLOSED");
+  assert.deepEqual(h.calls.quotes, [300n]);
+  assert.equal(h.delta(mint), -200n);
+  assert.equal(h.automation.blocks()[0].mint, mint);
+  const trade = h.db.prepare("SELECT * FROM trade_history").get()!;
+  assert.equal(trade.trigger_reason, "OOR_BELOW_TIMEOUT");
+  assert.equal(JSON.parse(String(trade.trigger_detail)).sweepWallet, true);
+  assert.equal(h.db.prepare("SELECT state FROM positions").get()!.state, "OPEN");
+  assert.equal(h.db.prepare("SELECT count(*) n FROM transactions").get()!.n, 0);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_lower_oor").get()!.n, 0);
+  assert.match(h.sent.map(item=>item.text).join("\n"), /OOR bawah terus-menerus 24 jam/);
+});
+
+test("24h virtual lower OOR persists pending swaps and restart recovery never recloses or credits twice", async (t) => {
+  const h = harness(t); h.candidates();
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  await h.automation.tick();
+  const item = h.automation.list()[0];
+  h.snapshot.active = item.lower_bin - 1;
+  await h.automation.tick();
+  now += 24*3600000;
+  h.db.prepare("UPDATE automation_lower_oor SET last_at=? WHERE position_id=?").run(now-15000,item.id);
+  h.calls.failQuote = true; t.mock.method(console, "warn", () => {});
+  await h.automation.tick();
+  assert.equal(h.automation.list()[0].state, "CLOSING");
+  assert.equal(h.automation.list()[0].reason, "OOR_BELOW_TIMEOUT");
+  const afterClose = h.delta();
+  await h.automation.tick(); assert.equal(h.delta(), afterClose);
+  h.calls.failQuote = false; h.calls.quotes=[];
+  const recovered = new PaperAutomation(h.options);
+  const held = BigInt(recovered.list()[0].hold_token!);
+  await recovered.tick();
+  assert.deepEqual(h.calls.quotes, [held+200n]);
+  assert.equal(recovered.list().length, 0);
+  const final = h.delta(); await recovered.tick(); assert.equal(h.delta(), final);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM trade_history WHERE position_id=?").get("paper:"+item.id)!.n, 1);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM automation_events WHERE type='CLOSE_STARTED'").get()!.n, 1);
+  assert.equal(h.db.prepare("SELECT count(*) n FROM transactions").get()!.n, 0);
+});
+
+test("24h close is cancelled if the current feed recovers or expires during balance checks", async (t) => {
+  for (const recovery of [true,false]) {
+    const h = harness(t); h.real(); h.snapshot.active=-1;
+    let now = Date.now(); t.mock.method(Date, "now", () => now);
+    await h.automation.tick();
+    h.db.prepare("UPDATE automation_lower_oor SET since_at=?").run(now-24*3600000+15000);
+    now += 15000;
+    h.market.walletSol = async () => { if(recovery) h.snapshot.active=0; else now+=30001; return 20000000000n; };
+    await h.automation.tick();
+    assert.equal(h.delta(),0n);
+    assert.equal(h.automation.blocks().length,0);
+    assert.equal(h.db.prepare("SELECT count(*) n FROM automation_events WHERE type='CLOSE_STARTED'").get()!.n,0);
+  }
+});

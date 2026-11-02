@@ -198,3 +198,7 @@ CA
 Always label automation entries, closes and swaps as SIMULASI/DRY-RUN. Show real and virtual counts separately; a simulated manual close still consumes a real slot. Virtual cards use 🟡 VIRTUAL and estimated net SOL PnL. Mark closed manual simulations explicitly while the real position remains OPEN. `/auto unblock <mint>` removes a loss block only after its pending swap is resolved. Pending swaps and dust must never be displayed as realized SOL.
 
 Example: `Slot 16/15 · nyata 16 · virtual 0` followed by `Entry menunggu slot`. Notifications state the exit percentage reason, source/paper ID, pool, net estimated SOL profit, and swap result.
+
+### Continuous lower OOR loss
+
+`/auto` shows `OOR bawah terus-menerus ≥24 jam: close loss dan swap seluruh saldo mint ke SOL (simulasi)` alongside the immediate ≥20-bin rule. Notifications/journal label `OOR_BELOW_TIMEOUT` as `Close loss OOR bawah terus-menerus 24 jam`. Include the existing mint-block/unblock and entire same-mint wallet sweep guidance. Retain DRY-RUN labels and explicit real-position-stays-open wording for manual positions. Sample reason: `Alasan  Close loss OOR bawah terus-menerus 24 jam`.

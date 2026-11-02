@@ -11,7 +11,7 @@ import { notificationCard, notificationSol, notificationPercent, triggerReasonLa
 import type { Notification } from "../telegram/client.ts";
 import { cachedTokenInfo, tokenLabel } from "../market-data/token-info.ts";
 import { safeError } from "../security.ts";
-import { exitReason, fresh, solLamports, swapAllowed } from "./rules.ts";
+import { belowRange, exitReason, fresh, LOWER_OOR_TIMEOUT_MS, solLamports, swapAllowed } from "./rules.ts";
 import { markPaper, type Market, type PaperBin, type Holding } from "./market.ts";
 
 export type PaperPosition = {
@@ -48,6 +48,10 @@ export class PaperAutomation {
       CREATE TABLE IF NOT EXISTS automation_blocks (mint TEXT PRIMARY KEY, blocked_at INTEGER NOT NULL, reason TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_balances (mint TEXT PRIMARY KEY, delta TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_events (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS automation_lower_oor (
+        position_id TEXT PRIMARY KEY, pool TEXT NOT NULL, lower_bin INTEGER NOT NULL, upper_bin INTEGER NOT NULL,
+        sol_is_x INTEGER NOT NULL, since_at INTEGER NOT NULL, last_at INTEGER NOT NULL
+      );
     `);
     // A reservation has no ledger debit until OPEN is committed atomically.
     options.db.prepare("DELETE FROM automation_positions WHERE state='RESERVED'").run();
@@ -81,6 +85,7 @@ export class PaperAutomation {
       `Range ${this.options.config.automation.min_price_percent}%–0% · profit neto ≥${this.options.config.automation.profit_percent}%`,
       `Stop loss PnL neto ≤−${this.options.config.automation.stop_loss_percent}% dari modal posisi`,
       `OOR atas ≥${this.options.config.automation.oor_above_bins} bin · bawah ≥${this.options.config.automation.oor_below_bins} bin dari batas range (harga token/SOL)`,
+      "OOR bawah terus-menerus ≥24 jam: close loss dan swap seluruh saldo mint ke SOL (simulasi)",
       `Perubahan saldo SOL simulasi ${balances ? Number(balances.delta) / 1e9 : 0} SOL · swap menunggu ${pending}`,
       `Token diblokir ${this.blocks().length}`, ...this.blocks().map((item) => item.mint),
       `Status: ${last}`, "", "Close manual hanya simulasi; posisi nyata tetap memakai slot.",
@@ -126,6 +131,24 @@ export class PaperAutomation {
       !this.list().some((item) => item.mint === mint || item.pool === pool);
   }
 
+  private oorBelowMs(id: string, pool: string, lower: number, upper: number, price?: Price): number {
+    const reset = () => this.options.db.prepare("DELETE FROM automation_lower_oor WHERE position_id=?").run(id);
+    if (!price || !fresh(price.at) || !belowRange({ ...price, lower, upper })) { reset(); return 0; }
+    const old = this.options.db.prepare("SELECT * FROM automation_lower_oor WHERE position_id=?").get(id) as
+      { pool: string; lower_bin: number; upper_bin: number; sol_is_x: number; since_at: number; last_at: number } | undefined;
+    const gap = Math.min(120_000, Math.max(15_000, this.options.config.rpc.oor_fallback_poll_interval_sec * 1000) * 2);
+    const same = old && old.pool === pool && old.lower_bin === lower && old.upper_bin === upper &&
+      old.sol_is_x === Number(price.solIsX) && old.since_at <= old.last_at;
+    // The polled feed may predate a newer SDK snapshot from the same tick.
+    const at = same && old.last_at > price.at && fresh(old.last_at) && old.last_at - price.at <= gap ? old.last_at : price.at;
+    const since = same && at >= old.last_at && at - old.last_at <= gap ? old.since_at : at;
+    this.options.db.prepare(`INSERT INTO automation_lower_oor(position_id,pool,lower_bin,upper_bin,sol_is_x,since_at,last_at)
+      VALUES(?,?,?,?,?,?,?) ON CONFLICT(position_id) DO UPDATE SET pool=excluded.pool,lower_bin=excluded.lower_bin,
+      upper_bin=excluded.upper_bin,sol_is_x=excluded.sol_is_x,since_at=excluded.since_at,last_at=excluded.last_at`)
+      .run(id, pool, lower, upper, Number(price.solIsX), since, at);
+    return at - since;
+  }
+
   async tick(): Promise<void> {
     if (this.busy || !this.active()) return;
     this.busy = true;
@@ -133,6 +156,10 @@ export class PaperAutomation {
       const now = Date.now(), full = now - this.lastValuation >= this.options.config.automation.valuation_interval_sec * 1000;
       if (full) this.lastValuation = now;
       const real = listPositions(this.options.db);
+      const tracked = [...real.filter((position) => position.quoteMint === SOL_MINT && !position.ignored &&
+        !["CLOSED", "CLOSING"].includes(this.manualState(position.id)?.state ?? "OPEN")).map((position) => position.id),
+      ...this.list().filter((item) => item.origin === "virtual" && item.state === "OPEN" && !item.ignored).map((item) => item.id)];
+      this.options.db.prepare("DELETE FROM automation_lower_oor WHERE position_id NOT IN (SELECT value FROM json_each(?))").run(JSON.stringify(tracked));
       if (full) this.pnlResults = await this.options.pnl.refresh(real.map((item) => item.pool));
       const pnls = this.pnlResults;
       for (const position of real) {
@@ -140,8 +167,9 @@ export class PaperAutomation {
         const previous = this.manualState(position.id);
         if (position.quoteMint !== SOL_MINT || position.ignored || previous?.state === "CLOSED" || previous?.state === "CLOSING") continue;
         const price = this.options.price(position.pool);
+        const duration = this.oorBelowMs(position.id, position.pool, position.lowerBinId, position.upperBinId, price);
         if (!price || !fresh(price.at)) continue;
-        const oor = exitReason({ ...price, lower: position.lowerBinId, upper: position.upperBinId, principal: null, profit: null, ignored: false }, this.options.config.automation);
+        const oor = exitReason({ ...price, oorBelowMs: duration, lower: position.lowerBinId, upper: position.upperBinId, principal: null, profit: null, ignored: false }, this.options.config.automation);
         if (!oor && !full) continue;
         try {
           if (oor && !full && !fresh(pnls.get(position.pool)?.fetchedAt ?? 0)) {
@@ -150,16 +178,17 @@ export class PaperAutomation {
           }
           const result = pnls.get(position.pool), pnl = result?.positions.get(position.id);
           const snapshot = await this.options.market.snapshot(position.pool, position.lowerBinId, position.upperBinId);
+          const oorBelowMs = this.oorBelowMs(position.id, position.pool, position.lowerBinId, position.upperBinId, snapshot);
           const holding = await this.options.market.holding(position);
           const basisFresh = !result?.error && fresh(result?.fetchedAt ?? 0);
           const principal = basisFresh && pnl?.deposits != null && pnl.deposits > 0 && pnl.withdrawals != null && pnl.claimed != null ? solLamports(pnl.deposits) : null;
           const adjustment = pnl?.withdrawals != null && pnl.claimed != null ? solLamports(pnl.withdrawals + pnl.claimed) : null;
           const gas = this.options.market.gas(position.upperBinId - position.lowerBinId + 1);
-          const currentOor = exitReason({ ...snapshot, lower: position.lowerBinId, upper: position.upperBinId,
+          const currentOor = exitReason({ ...snapshot, oorBelowMs, lower: position.lowerBinId, upper: position.upperBinId,
             principal: null, profit: null, ignored: false }, this.options.config.automation);
           const valuation = await this.valuation(holding, position.tokenMint, gas, gas, principal, adjustment, currentOor);
           if (!fresh(result?.fetchedAt ?? 0)) valuation.profit = null;
-          const reason = exitReason({ ...snapshot, lower: position.lowerBinId, upper: position.upperBinId,
+          const reason = exitReason({ ...snapshot, oorBelowMs, lower: position.lowerBinId, upper: position.upperBinId,
             principal, profit: valuation.profit, ignored: position.ignored }, this.options.config.automation);
           if (!reason || !this.active() || listPositions(this.options.db).find((item) => item.id === position.id)?.ignored) continue;
           const id = randomUUID();
@@ -177,15 +206,17 @@ export class PaperAutomation {
         if (!this.active()) return;
         if (item.ignored) continue;
         const price = this.options.price(item.pool);
-        if (!full && (!price || !exitReason({ ...price, lower: item.lower_bin, upper: item.upper_bin, principal: null, profit: null, ignored: false }, this.options.config.automation))) continue;
+        const duration = this.oorBelowMs(item.id, item.pool, item.lower_bin, item.upper_bin, price);
+        if (!full && (!price || !exitReason({ ...price, oorBelowMs: duration, lower: item.lower_bin, upper: item.upper_bin, principal: null, profit: null, ignored: false }, this.options.config.automation))) continue;
         try {
           const snapshot = await this.options.market.snapshot(item.pool, item.lower_bin, item.upper_bin);
+          const oorBelowMs = this.oorBelowMs(item.id, item.pool, item.lower_bin, item.upper_bin, snapshot);
           const holding = markPaper(JSON.parse(item.model) as PaperBin[], snapshot);
-          const oor = exitReason({ ...snapshot, lower: item.lower_bin, upper: item.upper_bin, principal: null, profit: null, ignored: false }, this.options.config.automation);
+          const oor = exitReason({ ...snapshot, oorBelowMs, lower: item.lower_bin, upper: item.upper_bin, principal: null, profit: null, ignored: false }, this.options.config.automation);
           const valuation = await this.valuation(holding, item.mint, BigInt(item.entry_gas), this.options.market.gas(item.upper_bin - item.lower_bin + 1), BigInt(item.principal!), 0n, oor);
           this.options.db.prepare("UPDATE automation_positions SET profit=?,last_at=?,error=NULL WHERE id=? AND state='OPEN'")
             .run(valuation.profit?.toString() ?? null, snapshot.at, item.id);
-          const reason = exitReason({ ...snapshot, lower: item.lower_bin, upper: item.upper_bin, principal: BigInt(item.principal!), profit: valuation.profit, ignored: Boolean(item.ignored) }, this.options.config.automation);
+          const reason = exitReason({ ...snapshot, oorBelowMs, lower: item.lower_bin, upper: item.upper_bin, principal: BigInt(item.principal!), profit: valuation.profit, ignored: Boolean(item.ignored) }, this.options.config.automation);
           if (reason) await this.beginClose(item, holding, reason, Math.min(snapshot.at, valuation.at));
         } catch (error) { await this.failure(item.id, error); }
       }
@@ -237,7 +268,7 @@ export class PaperAutomation {
   private async valuation(holding: Holding, mint: string, entryGas: bigint, closeGas: bigint, principal: bigint | null, adjustment: bigint | null,
     oor: TriggerReason | undefined): Promise<{ profit: bigint | null; at: number }> {
     let at = Date.now();
-    if (oor === "OOR_BELOW_BINS" || principal === null || adjustment === null) return { profit: null, at };
+    if (oor === "OOR_BELOW_BINS" || oor === "OOR_BELOW_TIMEOUT" || principal === null || adjustment === null) return { profit: null, at };
     let out = 0n, swapGas = 0n;
     if (holding.token > 0n) {
       try {
@@ -259,6 +290,8 @@ export class PaperAutomation {
     const gas = this.options.market.gas(item.upper_bin - item.lower_bin + 1);
     const balance = await this.options.market.walletSol();
     if (reason === "STOP_LOSS" && !fresh(valuedAt ?? 0)) return;
+    if (reason === "OOR_BELOW_TIMEOUT" && this.oorBelowMs(item.source_id ?? item.id, item.pool, item.lower_bin, item.upper_bin,
+      this.options.price(item.pool)) < LOWER_OOR_TIMEOUT_MS) return;
     if (balance + this.delta(SOL_MINT) < gas) throw new Error("Saldo simulasi tidak cukup untuk gas close");
     if (!this.active() || (item.source_id ? listPositions(this.options.db).find((row) => row.id === item.source_id)?.ignored !== false : this.list().find((row) => row.id === item.id)?.ignored !== 0)) return;
     const rent = holding.rent ?? BigInt(item.rent);
@@ -269,14 +302,15 @@ export class PaperAutomation {
       if (!changed) return;
       this.change(SOL_MINT, holding.sol + rent - gas);
       this.change(item.mint, holding.token);
-      if (reason === "OOR_BELOW_BINS" || reason === "STOP_LOSS") this.options.db.prepare("INSERT OR IGNORE INTO automation_blocks(mint,blocked_at,reason) VALUES(?,?,?)").run(item.mint, Date.now(), reason);
+      this.options.db.prepare("DELETE FROM automation_lower_oor WHERE position_id=?").run(item.source_id ?? item.id);
+      if (reason === "OOR_BELOW_BINS" || reason === "OOR_BELOW_TIMEOUT" || reason === "STOP_LOSS") this.options.db.prepare("INSERT OR IGNORE INTO automation_blocks(mint,blocked_at,reason) VALUES(?,?,?)").run(item.mint, Date.now(), reason);
       this.event("CLOSE_STARTED", { id: item.id, source: item.source_id, reason, closeGas: gas.toString() });
       transitioned = true;
     });
     if (transitioned) await this.notifyPosition("🟡 CLOSE SIMULASI DIMULAI", item, [
       { label: "Alasan", value: triggerReasonLabel(reason) },
       { label: "Asal", value: item.source_id ? "Posisi manual" : "Posisi virtual" },
-      ...(reason === "OOR_BELOW_BINS" || reason === "STOP_LOSS" ? ["Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",
+      ...(reason === "OOR_BELOW_BINS" || reason === "OOR_BELOW_TIMEOUT" || reason === "STOP_LOSS" ? ["Token diblokir sampai diaktifkan manual melalui /auto unblock <mint>.",
         "Setelah loss, simulasi swap mencakup seluruh saldo mint di wallet, termasuk saldo lama."] : []),
       item.source_id ? "Posisi nyata tetap terbuka dan memakai slot." : "Proses hanya mengubah ledger simulasi.",
     ]);
@@ -284,7 +318,7 @@ export class PaperAutomation {
 
   private async finishClose(item: PaperPosition): Promise<void> {
     // Pending percentage exits retain their original sweep/reentry behavior after restart.
-    const loss = item.reason === "STOP_LOSS" || item.reason === "OOR_BELOW_BINS" || item.reason === "OOR_BELOW_PERCENT";
+    const loss = item.reason === "STOP_LOSS" || item.reason === "OOR_BELOW_BINS" || item.reason === "OOR_BELOW_TIMEOUT" || item.reason === "OOR_BELOW_PERCENT";
     const token = BigInt(item.hold_token!), sol = BigInt(item.hold_sol!);
     const chain = await this.options.market.walletToken(item.mint);
     const available = chain + this.delta(item.mint);
