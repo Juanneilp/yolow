@@ -84,7 +84,7 @@
   "history": {
     "enabled": true,
     "record_dry_run_trades": true,
-    "snapshot_interval_sec": 300,
+    "snapshot_interval_sec": 900,
     "snapshot_retention_days": 180,
     "candle_audit_retention_days": 60,
     "post_exit_marks_min": [
@@ -117,6 +117,7 @@
     "profit_percent": 5,
     "stop_loss_percent": 50,
     "oor_above_bins": 10,
-    "oor_below_bins": 20
+    "oor_below_bins": 20,
+    "valuation_interval_sec": 180
   }
 }

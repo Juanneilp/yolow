@@ -254,8 +254,13 @@ test("Careless uses real cached positions after screening, ignoring virtual and 
     assert.match(card, /👛 Token: <b>BELUM ADA<\/b>/); assert.match(card, /🏊 Pool ini: <b>BELUM ADA<\/b>/);
   }
   setMeta(db, "position_discovery_succeeded_at", String(now - 600001));
-  const feed = new ActiveBinMonitor({ db, connection: {} as any, fallbackPollMs: 15000 });
-  await (feed as any).updateStoredBins(key(101), 5);
+  const connection = { getMultipleAccountsInfo: async (keys: PublicKey[]) => keys.map(() => ({
+    owner: (feed as any).program.programId, data: Buffer.alloc(0),
+  })) };
+  const feed = new ActiveBinMonitor({ db, connection: connection as any, fallbackPollMs: 15000 });
+  t.after(() => feed.close());
+  t.mock.method((feed as any).program.coder.accounts, "decode", () => ({ activeId: 5, binStep: 80, tokenXMint: new PublicKey(sol) }));
+  await feed.poll();
   assert.equal(getMeta(db, "position_discovery_succeeded_at"), String(now - 600001));
   const stored = db.prepare("SELECT last_checked FROM positions WHERE id=?").get(key(151))!;
   assert.equal(stored.last_checked, now);

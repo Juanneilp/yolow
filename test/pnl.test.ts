@@ -3,7 +3,6 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { PublicKey } from "@solana/web3.js";
 import { PositionPnlMonitor } from "../src/positions/pnl.ts";
-import { ActiveBinMonitor } from "../src/market-data/active-bin.ts";
 import { openDatabase } from "../src/storage/db.ts";
 import { createCommandHandler } from "../src/telegram/commands.ts";
 import { parseConfig } from "../src/config/config.ts";
@@ -264,7 +263,7 @@ test("Telegram PnL command and Refresh show lifetime SOL values without any RPC 
   assert.equal((await handler.onCommand("/positions", []))!.text, reply!.text);
   assert.equal((await handler.onCallback("cmd:/pnl"))!.text, reply!.text);
   assert.equal(config.mode.position_poll_interval_sec, 300);
-  assert.equal(config.history.snapshot_interval_sec, 300);
+  assert.equal(config.history.snapshot_interval_sec, 900);
   assert.equal(config.rpc.oor_fallback_poll_interval_sec, 15);
 });
 
@@ -412,50 +411,4 @@ test("position HTML escapes token names and provider errors and stays in one edi
     assert.match(reply.text, /OOR atas &lt;0,01%/);
   }
   assert.match(detail.text, /&amp;/);
-});
-
-test("OOR fallback reads one account per pool every 15 seconds and rejects stale/invalid data", async (t) => {
-  const db = openDatabase(":memory:");
-  t.after(() => db.close());
-  insertPosition(db);
-  insertPosition(db, sol);
-  let now = 1_000_000;
-  let calls = 0;
-  let activeId: unknown = 5;
-  let fails = false;
-  t.mock.method(Date, "now", () => now);
-  const monitor = new ActiveBinMonitor({
-    db, connection: { _rpcWebSocketConnected: false, getAccountInfo: async () => {
-      calls++;
-      if (fails) throw new Error("offline");
-      return { data: Buffer.alloc(0) };
-    } } as any,
-    fallbackPollMs: 15_000,
-  });
-  const state = {
-    client: { lbPair: { binStep: 80 }, tokenX: { mint: { address: new PublicKey(sol) } }, program: { coder: { accounts: { decode: () => ({ activeId }) } } }, getActiveBin: () => { throw new Error("Expensive bin fetch"); } },
-    activeBin: 5, lastUpdate: now, lastPollAt: 0, storedBin: 5, storedAt: now,
-  };
-  (monitor as any).pools.set(pool, state);
-  t.mock.method(console, "warn", () => {});
-  await (monitor as any).tick();
-  assert.equal(calls, 1);
-  now += 14_999;
-  await (monitor as any).tick();
-  assert.equal(calls, 1);
-  now++;
-  activeId = "invalid";
-  await (monitor as any).tick();
-  assert.equal(calls, 2);
-  assert.equal(state.activeBin, 5);
-  fails = true;
-  state.activeBin = 20;
-  now += 16_000;
-  await (monitor as any).tick();
-  assert.equal(monitor.latest(pool), undefined);
-  fails = false;
-  activeId = 20;
-  now += 15_000;
-  await (monitor as any).tick();
-  assert.equal(monitor.latest(pool)?.active, 20);
 });

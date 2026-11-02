@@ -136,6 +136,8 @@ Explain that PnL is a Meteora lifetime estimate including fees/rewards, with gas
 
 ### Profit reminders
 
+Expose hot-editable `automation.valuation_interval_sec` in **Otomatisasi DRY-RUN**, as an integer >=15 seconds. Example save: `✅ CONFIG DISIMPAN\nautomation.valuation_interval_sec\nSebelum: 60\nSekarang: 180\nPerubahan aktif sekarang.`
+
 Expose `notify.profit_alert.enabled`, `interval_minutes`, and `threshold_percent` in **Notifikasi & riwayat**. Defaults are enabled, five minutes, and strictly above 5%; changes apply without restart. Send one combined HTML card summary per interval when eligible open positions exist, including positions with ignored exits. Order by highest profit percentage and show token pair, shortened position ID, signed SOL PnL, and percentage. Use existing token labels with a shortened mint fallback.
 
 Title the message **💰 POSISI PROFIT DI ATAS AMBANG**. Include qualifying count, configured threshold and interval, check time, the Meteora estimate caveat, and `/positions` for detail. Keep messages under 3,500 characters; split long summaries into numbered parts without dropping positions. Do not send reminders from manual refresh, failed fetches, missing values, or fetch results older than two minutes.

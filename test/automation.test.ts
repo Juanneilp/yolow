@@ -320,6 +320,54 @@ test("manual stop-loss sweeps old tokens, blocks reentry and recovers a failed s
   assert.equal(h.db.prepare("SELECT state FROM positions").get()!.state, "OPEN");
 });
 
+test("routine valuation respects three minutes and hot changes without delaying OOR", async (t) => {
+  const h = harness(t); h.real();
+  h.cfg.automation.valuation_interval_sec = 180;
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  await h.automation.tick();
+  assert.equal(h.calls.holding, 1);
+  now += 60_000;
+  await h.automation.tick();
+  assert.equal(h.calls.holding, 1);
+  now += 119_999;
+  await h.automation.tick();
+  assert.equal(h.calls.holding, 1);
+  now++;
+  await h.automation.tick();
+  assert.equal(h.calls.holding, 2);
+  h.cfg.automation.valuation_interval_sec = 15;
+  now += 15_000;
+  await h.automation.tick();
+  assert.equal(h.calls.holding, 3);
+});
+
+test("upper OOR refreshes an expired basis between routine valuations and preserves stop-loss priority", async (t) => {
+  for (const stale of [false, true]) {
+    const h = harness(t); h.real();
+    h.cfg.automation.valuation_interval_sec = 180;
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    await h.automation.tick();
+    const initial = now;
+    const refresh = h.options.pnl.refresh;
+    let refreshes = 0;
+    h.options.pnl.refresh = async (...args) => {
+      refreshes++;
+      const result = await refresh(...args);
+      if (stale) result.get(pool)!.fetchedAt = initial;
+      return result;
+    };
+    now += 125_000;
+    h.snapshot.active = 20;
+    h.market.holding = async () => ({ sol: 100000000n, token: 100n });
+    await h.automation.tick();
+    assert.equal(refreshes, 1);
+    assert.equal(h.automation.list(false)[0].reason, stale ? "OOR_ABOVE_BINS" : "STOP_LOSS");
+    assert.equal(h.db.prepare("SELECT count(*) AS n FROM transactions").get()!.n, 0);
+  }
+});
+
 test("virtual stop-loss closes in range and cannot reopen the blocked mint", async (t) => {
   const h = harness(t); h.candidates();
   await h.automation.tick();

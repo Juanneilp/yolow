@@ -6,7 +6,7 @@ Yolow runs as one Node.js process: validated configuration, Helius RPC/WebSocket
 flowchart LR
   CFG[Config + persisted mode] --> AGENT[YolowAgent]
   AGENT --> REAL[Discover actual wallet positions]
-  AGENT --> BIN[Active bin WS + 15s fallback]
+  AGENT --> BIN[Active bin batched polling every 15s]
   REAL --> DB[(SQLite)]
   BIN --> AUTO[Dry-run PaperAutomation]
   CARELESS[Top Careless screening] --> AUTO
@@ -25,7 +25,8 @@ flowchart LR
 | `src/automation/automation.ts` | Reservations, slot budget, virtual entry, manual/virtual simulated closes, ledger, pending swaps, loss blocks and recovery |
 | `src/positions/monitor.ts` | Actual on-chain discovery and persisted ignore state |
 | `src/positions/pnl.ts` | Cached Meteora lifetime SOL PnL and basis for actual positions |
-| `src/market-data/active-bin.ts` | Shared per-pool WS feed, polling fallback and stale-feed suppression, including virtual pools |
+| `src/market-data/active-bin.ts` | Shared confirmed account polling in batches of up to 100 pools, including virtual pools; SDK decoding without pool clients; stale-feed suppression |
+| `src/market-data/rpc.ts` | Shared HTTP 429 cooldown and recovery probe; hourly per-method attempts and estimated credits |
 | `src/market-data/top-careless.ts` | Shared screening/ranking; pre-limit mint/bin-step exclusions for automation |
 | `src/market-data/candles.ts` | Historical data for journal marks only |
 | `src/execution/executor.ts` | Existing validated close/swap execution and recovery; rejects retired trigger reasons |
@@ -39,7 +40,7 @@ The manual blacklist is a validated `top_careless.blacklisted_mints` array, defa
 
 Virtual positions persist bin shares, opening allocation, fee baselines and refundable rent. Current bin balances and fee accumulators estimate SOL/token holdings. Empty bins use ideal fills at bin prices. This model omits market impact and cannot reproduce an actual LP position exactly; it is restricted to dry-run. Manual profit requires fresh Meteora deposit/withdrawal/claimed-fee basis plus read-only SDK holdings and conservative liquidation quotes.
 
-Exit priority is lower OOR loss at ≥20 bins, net SOL stop-loss at ≤−50% of principal, upper OOR at ≥10 bins, then net SOL take-profit at ≥5%. PnL valuation runs every 60 seconds and before upper OOR closes; failed valuation preserves OOR behavior. STOP_LOSS reuses loss blocks, wallet sweep and CLOSING recovery in paper automation only. Bin distances use token/SOL price direction and invert for SOL on X. Executor rechecks reuse the shared exit rule. Legacy percentage CLOSING rows retain sweep/reentry semantics without rewriting history; new percentage triggers are rejected. OPEN → CLOSING atomically records holdings, credits close proceeds/rent minus gas and blocks a loss mint. CLOSING persists while the quote fails; recovery retries only the swap. Loss swaps include the whole wallet mint balance; journal profit allocates only the position share. Dust leaves token balances unchanged and credits no SOL. CLOSING → CLOSED atomically debits swapped tokens, credits net SOL and writes a unique `paper:<uuid>` journal row. No actual position is marked CLOSED by this flow.
+Exit priority is lower OOR loss at ≥20 bins, net SOL stop-loss at ≤−50% of principal, upper OOR at ≥10 bins, then net SOL take-profit at ≥5%. PnL valuation follows hot-editable `automation.valuation_interval_sec` (180 seconds in the example, 60 for older configs), with fresh valuation and expired PnL-basis refresh on OOR between routine valuations; failed valuation preserves OOR behavior. STOP_LOSS reuses loss blocks, wallet sweep and CLOSING recovery in paper automation only. Bin distances use token/SOL price direction and invert for SOL on X. Executor rechecks reuse the shared exit rule. Legacy percentage CLOSING rows retain sweep/reentry semantics without rewriting history; new percentage triggers are rejected. OPEN → CLOSING atomically records holdings, credits close proceeds/rent minus gas and blocks a loss mint. CLOSING persists while the quote fails; recovery retries only the swap. Loss swaps include the whole wallet mint balance; journal profit allocates only the position share. Dust leaves token balances unchanged and credits no SOL. CLOSING → CLOSED atomically debits swapped tokens, credits net SOL and writes a unique `paper:<uuid>` journal row. No actual position is marked CLOSED by this flow.
 
 Paper tables are `automation_positions`, `automation_balances`, `automation_blocks` and `automation_events`; preferred upper-OOR reentry is persisted in meta. Reservations without a committed debit are cleared after restart. OPEN/CLOSING positions, models, offsets and blocks are retained. Legacy signals/candles/triggers remain historical records; their engines, timers and editable config have been removed.
 

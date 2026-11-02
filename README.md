@@ -50,11 +50,15 @@ PnL neto untuk trigger memakai hasil likuidasi estimasi setelah slippage dan gas
 
 Setelah loss, swap mencakup **seluruh saldo wallet untuk mint yang sama, termasuk saldo lama**. Exit lain hanya menukar token hasil posisi. Dust di bawah **$0,20** tetap token; swap gagal dicoba ulang tanpa mengulang close.
 
-Pemeriksaan OOR berjalan setiap **15 detik**; valuasi PnL setiap **60 detik** dan sebelum exit OOR atas agar stop-loss didahulukan. Ambang −50% adalah pemicu, bukan jaminan kerugian akhir tepat −50%.
+Pemeriksaan OOR berjalan setiap **15 detik**, memakai polling gabungan maksimal 100 pool per permintaan tanpa subscription akun WebSocket. Valuasi PnL mengikuti `automation.valuation_interval_sec`: contoh konfigurasi **180 detik**, sedangkan config lama tanpa field ini tetap **60 detik**. OOR tetap diperiksa di antara valuasi rutin, dengan refresh basis PnL yang kedaluwarsa sebelum menentukan prioritas stop-loss. Ambang −50% adalah pemicu, bukan jaminan kerugian akhir tepat −50%.
+
+Profil hemat memakai snapshot jurnal setiap **900 detik** (`history.snapshot_interval_sec`), discovery setiap 300 detik, dan polling bin setiap 15 detik (`rpc.oor_fallback_poll_interval_sec`, nama lama dipertahankan). TP/SL dapat terlambat hingga interval valuasi ditambah waktu pemrosesan; snapshot lebih jarang membuat metrik historis kurang rinci.
+
+Semua pemanggil HTTP RPC berbagi cooldown saat HTTP 429: 60, 120, 240, lalu maksimal 300 detik; `Retry-After` yang lebih lama tetap dihormati. Satu permintaan menguji pemulihan setelah cooldown. Retry 429 bawaan SDK dinonaktifkan. Ringkasan `Helius RPC usage` ditulis ke log per jam dan saat shutdown, berisi jumlah permintaan per metode, estimasi kredit (standar 1, `getProgramAccounts` 10), 429 dan permintaan yang ditunda. Ringkasan hanya mencakup proses berjalan; dashboard Helius adalah sumber tagihan sebenarnya.
 
 ## Konfigurasi dan dokumentasi
 
-Otomatisasi awalnya nonaktif. Aktifkan melalui `/config set automation.enabled true` hanya dalam DRY-RUN. Ambang dapat diubah melalui Pengaturan: `automation.oor_above_bins`, `automation.oor_below_bins`, `automation.stop_loss_percent`, dan `automation.profit_percent`. LIVE ditolak selama otomatisasi aktif.
+Otomatisasi awalnya nonaktif. Aktifkan melalui `/config set automation.enabled true` hanya dalam DRY-RUN. Ambang dapat diubah melalui Pengaturan: `automation.oor_above_bins`, `automation.oor_below_bins`, `automation.stop_loss_percent`, dan `automation.profit_percent`. Interval valuasi dapat diubah langsung tanpa restart dengan `/config set automation.valuation_interval_sec 180` (bilangan bulat aman minimal 15). LIVE ditolak selama otomatisasi aktif.
 
 - [Contoh konfigurasi](config.example.json) dan [template environment](.env.example).
 - [Persyaratan fitur](PRD.md), [arsitektur](ARCHITECTURE.md), dan [desain Telegram](DESIGN_SYSTEM.md).

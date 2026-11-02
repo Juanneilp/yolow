@@ -95,8 +95,8 @@ export class YolowAgent {
     this.timers.push(setInterval(() => void this.runBackgroundTask("post-exit marks", () => this.updatePostExitMarks()), 60_000));
     if (this.options.config.history.backup.enabled) this.scheduleWib("daily backup", this.options.config.history.backup.at_time, () => this.backup());
     if (this.options.config.notify.heartbeat.enabled) this.scheduleWib("daily heartbeat", this.options.config.notify.heartbeat.at_time, () => this.heartbeat());
-    this.timers.push(setInterval(() => void this.runBackgroundTask("automation", async () => { await this.automation.tick(); if (!this.stopped) await this.activeBins.refreshPools(); }), 15_000));
-    void this.runBackgroundTask("automation", async () => { await this.automation.tick(); if (!this.stopped) await this.activeBins.refreshPools(); });
+    this.timers.push(setInterval(() => void this.runBackgroundTask("automation", () => this.runAutomation()), 15_000));
+    void this.runBackgroundTask("automation", () => this.runAutomation());
     console.log(`Yolow agent started in ${this.executor.isDryRun() ? "DRY-RUN" : "LIVE"} mode for ${this.options.wallet.toBase58()}`);
   }
 
@@ -107,6 +107,11 @@ export class YolowAgent {
     await Promise.allSettled([...this.backgroundTasks.values()]);
     await this.activeBins.close();
     this.options.db.close();
+  }
+
+  private async runAutomation(): Promise<void> {
+    await this.activeBins.poll();
+    if (!this.stopped) await this.automation.tick();
   }
 
   private runBackgroundTask(name: string, operation: () => Promise<void>): Promise<void> {

@@ -20,6 +20,7 @@ export type AppConfig = {
   automation: {
     enabled: boolean; max_positions: number; position_sol: number; min_bin_step: number;
     min_price_percent: number; profit_percent: number; stop_loss_percent: number; oor_above_bins: number; oor_below_bins: number;
+    valuation_interval_sec: number;
   };
   execution: { priority_fee: Record<string, any>; max_retries: number };
   swap: { enabled: boolean; output: "SOL"; min_value_usd: number; slippage_bps: number; max_slippage_bps: number; max_retries: number; close_empty_token_account: boolean };
@@ -102,10 +103,13 @@ export function parseConfig(text: string): AppConfig {
   delete automation.oor_above_percent;
   delete automation.oor_below_percent;
   for (const [key, value] of Object.entries({ enabled: false, max_positions: 15, position_sol: 0.5,
-    min_bin_step: 80, min_price_percent: -80, profit_percent: 5, stop_loss_percent: 50, oor_above_bins: 10, oor_below_bins: 20 })) {
+    min_bin_step: 80, min_price_percent: -80, profit_percent: 5, stop_loss_percent: 50, oor_above_bins: 10, oor_below_bins: 20, valuation_interval_sec: 60 })) {
     if (automation[key] === undefined) automation[key] = value;
   }
   if (typeof automation.enabled !== "boolean") throw new Error("automation.enabled must be boolean");
+  if (!Number.isSafeInteger(automation.valuation_interval_sec) || automation.valuation_interval_sec < 15) {
+    throw new Error("automation.valuation_interval_sec must be a safe integer >= 15");
+  }
   integer(automation.max_positions, "automation.max_positions", 1);
   if (automation.max_positions > 15) throw new Error("automation.max_positions cannot exceed 15");
   number(automation.position_sol, "automation.position_sol", 0.000000001);

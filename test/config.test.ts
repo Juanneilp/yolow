@@ -16,6 +16,20 @@ async function exampleConfig() {
   return parseConfig(await readFile("config.example.json", "utf8"));
 }
 
+test("valuation interval defaults older configs and validates hot updates", async () => {
+  const raw = JSON.parse(await readFile("config.example.json", "utf8"));
+  delete raw.automation.valuation_interval_sec;
+  const config = parseConfig(JSON.stringify(raw));
+  assert.equal(config.automation.valuation_interval_sec, 60);
+  for (const value of [14, -1, 15.5, null, "180", Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => prepareConfigUpdate(config, "automation.valuation_interval_sec", JSON.stringify(value)));
+  }
+  const update = prepareConfigUpdate(config, "automation.valuation_interval_sec", "180");
+  assert.equal(update.restartRequired, false);
+  applyConfigInPlace(config, update.config);
+  assert.equal(config.automation.valuation_interval_sec, 180);
+});
+
 test("profit alert config defaults old files and validates hot updates", async () => {
   const old = JSON.parse(await readFile("config.example.json", "utf8"));
   delete old.notify.profit_alert;

@@ -116,6 +116,24 @@ function agentHarness(t: any) {
   return { db, config, agent, sent };
 }
 
+test("automation awaits the bin poll before evaluating exits and respects shutdown", async (t) => {
+  const h = agentHarness(t);
+  const order: string[] = [];
+  let complete!: () => void;
+  t.mock.method((h.agent as any).activeBins, "poll", () => new Promise<void>((resolve) => { complete = () => { order.push("polled"); resolve(); }; }));
+  t.mock.method(h.agent.automation, "tick", async () => { order.push("evaluated"); });
+  const pending = (h.agent as any).runAutomation();
+  assert.deepEqual(order, []);
+  complete();
+  await pending;
+  assert.deepEqual(order, ["polled", "evaluated"]);
+  const stopping = (h.agent as any).runAutomation();
+  (h.agent as any).stopped = true;
+  complete();
+  await stopping;
+  assert.deepEqual(order, ["polled", "evaluated", "polled"]);
+});
+
 test("discovery sends distinct new/missing position cards with metadata, mode and useful buttons", async (t) => {
   const h = agentHarness(t);
   const insert = (id: string, mint: string) => h.db.prepare(`INSERT INTO positions

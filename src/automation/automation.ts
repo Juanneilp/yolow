@@ -130,7 +130,7 @@ export class PaperAutomation {
     if (this.busy || !this.active()) return;
     this.busy = true;
     try {
-      const now = Date.now(), full = now - this.lastValuation >= 60_000;
+      const now = Date.now(), full = now - this.lastValuation >= this.options.config.automation.valuation_interval_sec * 1000;
       if (full) this.lastValuation = now;
       const real = listPositions(this.options.db);
       if (full) this.pnlResults = await this.options.pnl.refresh(real.map((item) => item.pool));
@@ -142,9 +142,13 @@ export class PaperAutomation {
         const price = this.options.price(position.pool);
         if (!price || !fresh(price.at)) continue;
         const oor = exitReason({ ...price, lower: position.lowerBinId, upper: position.upperBinId, principal: null, profit: null, ignored: false }, this.options.config.automation);
-        const result = pnls.get(position.pool), pnl = result?.positions.get(position.id);
         if (!oor && !full) continue;
         try {
+          if (oor && !full && !fresh(pnls.get(position.pool)?.fetchedAt ?? 0)) {
+            this.pnlResults = await this.options.pnl.refresh(real.map((item) => item.pool));
+            for (const [pool, result] of this.pnlResults) pnls.set(pool, result);
+          }
+          const result = pnls.get(position.pool), pnl = result?.positions.get(position.id);
           const snapshot = await this.options.market.snapshot(position.pool, position.lowerBinId, position.upperBinId);
           const holding = await this.options.market.holding(position);
           const basisFresh = !result?.error && fresh(result?.fetchedAt ?? 0);

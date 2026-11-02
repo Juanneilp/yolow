@@ -8,6 +8,7 @@ import { getMeta, openDatabase } from "./storage/db.ts";
 import { runBot } from "./telegram/bot.ts";
 import { createCommandHandler } from "./telegram/commands.ts";
 import { telegramApiBase } from "./security.ts";
+import { createRpcFetch } from "./market-data/rpc.ts";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -56,8 +57,10 @@ function addApiKey(endpoint: string): string {
   return url.toString();
 }
 
+const rpc = createRpcFetch();
 const connection = new Connection(addApiKey(config.rpc.http_base), {
   wsEndpoint: addApiKey(config.rpc.ws_base), commitment: "confirmed",
+  fetch: rpc.fetch, disableRetryOnRateLimit: true,
 });
 const db = openDatabase(process.env.DB_PATH || "./data/yolow.db");
 const keypairPath = process.env.AGENT_KEYPAIR_PATH?.trim();
@@ -74,6 +77,8 @@ if (!startupDryRun) {
 }
 
 const shutdown = new AbortController();
+const usageTimer = setInterval(rpc.report, 60 * 60 * 1000);
+usageTimer.unref();
 let stopping = false;
 async function stop(signal: string): Promise<void> {
   if (stopping) return;
@@ -81,6 +86,8 @@ async function stop(signal: string): Promise<void> {
   console.log(`Stopping Yolow after ${signal}...`);
   shutdown.abort();
   await agent.stop();
+  clearInterval(usageTimer);
+  rpc.report();
 }
 process.once("SIGINT", () => void stop("SIGINT"));
 process.once("SIGTERM", () => void stop("SIGTERM"));
