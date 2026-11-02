@@ -7,7 +7,7 @@ Bot Telegram untuk memantau posisi **Meteora DLMM** satu wallet Solana, screenin
 ## Fitur utama
 
 - **Posisi & PnL:** daftar posisi nyata/virtual, PnL SOL/%, status range, detail posisi, serta kontrol abaikan/aktifkan exit.
-- **Top Careless:** screening pool token/SOL berdasarkan Simple Fee/TVL 24 jam, lalu volume. Filter awal: market cap ≥$1,5 juta, umur token ≥3 hari, TVL ≥$5.000.
+- **Top Careless:** screening hanya pool DLMM token/SOL dari API Pool Discovery yang dipakai web Meteora, diurutkan Fee/Active TVL 24 jam lalu volume. Filter: Jupiter Organic Score kedua token ≥50, market cap token ≥$1 juta, umur token ≥72 jam, holders ≥1.000, TVL ≥$5.000, Fee/Active TVL 24 jam ≥4%, dan BinStep ≥80. Nilai yang hilang/tidak valid tidak diloloskan.
 - **Otomatisasi SPOT:** entry SOL saja, modal default **0,5 SOL**, range **−80% hingga 0%**, bin step ≥80. Maksimum **15 posisi**, termasuk posisi nyata dan virtual; entry ditolak jika biaya pembukaan non-refundable tidak terbukti nol.
 - **Notifikasi:** posisi baru/hilang, entry/close simulasi, swap tertunda, dan pengingat profit. Default pengingat: setiap 5 menit untuk PnL **>5%**; pengingat tidak menjalankan close.
 - **Jurnal:** riwayat trade, statistik, catatan/tag, dan export CSV. Status simulasi serta swap tertunda tersimpan dan dapat dilanjutkan setelah restart.
@@ -80,3 +80,5 @@ Otomatisasi awalnya nonaktif. Aktifkan melalui `/config set automation.enabled t
 - [Contoh konfigurasi](config.example.json) dan [template environment](.env.example).
 - [Persyaratan fitur](PRD.md), [arsitektur](ARCHITECTURE.md), dan [desain Telegram](DESIGN_SYSTEM.md).
 - [Keamanan](PRD_SECURITY.md) dan [panduan pengembangan/runtime](AGENTS.md).
+
+Filter Careless berlaku bersama pada `/topcareless` dan screening entry otomatisasi. Field baru yang hot-editable: `top_careless.min_organic_score` (50), `min_holders` (1000), `min_fee_active_tvl_24h_percent` (4 berarti 4%, bukan 0,04) dan `min_bin_step` (80). `min_token_age_days` tetap disimpan sebagai 3 hari untuk kompatibilitas, ditampilkan sebagai 72 jam. Source: `https://pool-discovery-api.datapi.meteora.ag/pools?category=all&timeframe=24h`, dengan cursor `after_key`, maksimal 20 ×100 pool. Organic Score Jupiter, holders dan timestamp umur mengikuti snapshot web Meteora, tanpa request Jupiter terpisah atau tambahan Helius RPC. Active TVL merupakan likuiditas aktif/in-range; Fee/Active TVL memakai rasio langsung dari API dalam persen. Angka pool bukan jaminan profit posisi.

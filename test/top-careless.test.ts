@@ -16,14 +16,16 @@ import { ActiveBinMonitor } from "../src/market-data/active-bin.ts";
 const key = (n: number) => new PublicKey(Buffer.alloc(32, n)).toBase58();
 const sol = "So11111111111111111111111111111111111111112";
 const now = Date.UTC(2026, 9, 21);
-const config: TopCarelessConfig = { enabled: true, limit: 10, min_market_cap_usd: 1_500_000, min_token_age_days: 3, min_tvl_usd: 5000, blacklisted_mints: [] };
+const config: TopCarelessConfig = { enabled: true, limit: 10, min_market_cap_usd: 1_000_000,
+  min_token_age_days: 3, min_tvl_usd: 5000, min_organic_score: 50, min_holders: 1000,
+  min_fee_active_tvl_24h_percent: 4, min_bin_step: 80, blacklisted_mints: [] };
 const makePool = (n = 1, overrides = {}) => ({
-  address: key(n + 100), token_x: { address: key(n), market_cap: 1_500_000, symbol: "TOKEN", name: "Token" },
-  token_y: { address: sol }, tvl: 5000, volume: { "24h": 50_000 }, fee_tvl_ratio: { "24h": 0.1 }, pool_config: { bin_step: 25, base_fee_pct: 0.1 }, ...overrides,
+  pool_address: key(n + 100), pool_type: "dlmm",
+  token_x: { address: key(n), market_cap: 1_000_000, symbol: "TOKEN", name: "Token", created_at: now - 72 * 3600000, organic_score: 50, holders: 1000 },
+  token_y: { address: sol, organic_score: 99 }, tvl: 5000, active_tvl: 2500, volume: 50_000,
+  fee_active_tvl_ratio: 4, fee_pct: 0.1, dlmm_params: { bin_step: 80 }, base_token_holders: 1000, ...overrides,
 });
-const makeToken = (n = 1, ageDays = 3) => ({ id: key(n), firstPool: { createdAt: new Date(now - ageDays * 86_400_000).toISOString() } });
-const poolsUrl = "https://dlmm.datapi.meteora.ag";
-const tokensUrl = "https://api.jup.ag/tokens/v2";
+const pageResponse = (data: unknown[], more = false, cursor = "next") => Response.json({ data, has_more: more, ...(more ? { after_key: cursor } : {}) });
 
 // No RPC or signing is needed by the screening handler.
 function handlerFor(db: ReturnType<typeof openDatabase>, appConfig: ReturnType<typeof parseConfig>, apiKey?: string, configPath?: string) {
@@ -99,30 +101,6 @@ test("manual blacklist commands persist, audit, reload, and stay separate from l
   assert.equal(audit.new_value, JSON.stringify([key(2)]));
 });
 
-test("manual blacklist removes every matching pool in both SOL orientations before ranking and metadata", async (t) => {
-  t.mock.method(Date, "now", () => now);
-  const cfg = { ...config, limit: 2, blacklisted_mints: [key(1)] };
-  const pools = [makePool(), makePool(1, { address: key(110), token_x: { address: sol }, token_y: makePool().token_x }),
-    makePool(2), makePool(3, { volume: { "24h": 100000 } })];
-  const tokens = [makeToken(1), makeToken(2), makeToken(3)];
-  const selected = selectTopCareless(pools, new Map(tokens.map((token) => [token.id, token])), cfg, now);
-  assert.deepEqual(selected.map((item) => item.mint), [key(3), key(2)]);
-  const queries: string[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-    const url = new URL(input);
-    if (url.hostname === "dlmm.datapi.meteora.ag") return Response.json({ pages: 1, data: pools });
-    assert.equal(url.hostname, "api.jup.ag");
-    queries.push(url.searchParams.get("query")!);
-    return Response.json(tokens.slice(1));
-  });
-  const result = await fetchTopCareless(cfg, "test", poolsUrl, tokensUrl);
-  assert.deepEqual(result.pools, selected);
-  assert.deepEqual(queries, [[key(2), key(3)].join(",")]);
-  cfg.blacklisted_mints.push(key(2), key(3));
-  assert.deepEqual((await fetchTopCareless(cfg, "test", poolsUrl, tokensUrl)).pools, []);
-  assert.equal(queries.length, 1);
-});
-
 test("blacklist commands and callbacks from unauthorized chats or senders never change configuration", async (t) => {
   const db = openDatabase(":memory:"); t.after(() => db.close());
   const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
@@ -156,8 +134,7 @@ test("blacklist commands and callbacks from unauthorized chats or senders never 
 });
 
 test("Careless marks unique active wallet positions by mint and pool without changing ranking", () => {
-  const selected = selectTopCareless([makePool(), makePool(1, { address: key(103) }), makePool(2)],
-    new Map([[key(1), makeToken()], [key(2), makeToken(2)]]), config, now);
+  const selected = selectTopCareless([makePool(), makePool(1, { pool_address: key(103) }), makePool(2)], config, now);
   const ranked = selected.map((pool) => pool.address);
   const first = activePosition(1);
   const ignored = { ...activePosition(2), ignored: true };
@@ -183,7 +160,7 @@ test("Careless marks unique active wallet positions by mint and pool without cha
 });
 
 test("Careless recognizes both token sides and keeps the original formatter compatible without wallet context", () => {
-  const selected = selectTopCareless([makePool()], new Map([[key(1), makeToken()]]), config, now);
+  const selected = selectTopCareless([makePool()], config, now);
   const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now), {
     positions: [activePosition(1, key(101), sol, key(1)), activePosition(2, key(105), key(5), key(1))],
     syncedAt: now, discoveryFailed: false, pollIntervalSec: 300,
@@ -195,7 +172,7 @@ test("Careless recognizes both token sides and keeps the original formatter comp
 });
 
 test("Careless does not claim absence from stale, failed or unknown wallet snapshots", () => {
-  const selected = selectTopCareless([makePool(), makePool(2)], new Map([[key(1), makeToken()], [key(2), makeToken(2)]]), config, now);
+  const selected = selectTopCareless([makePool(), makePool(2)], config, now);
   for (const status of [
     { syncedAt: now - 600001, discoveryFailed: false },
     { syncedAt: now, discoveryFailed: true },
@@ -238,12 +215,9 @@ test("Careless uses real cached positions after screening, ignoring virtual and 
     VALUES(?,?,?,?,?,0,10,80,?,1)`);
   paper.run("closed-paper", key(151), "manual", key(101), key(1), "CLOSED");
   paper.run("virtual-paper", null, "virtual", key(102), key(2), "OPEN");
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-    const url = new URL(input);
-    if (url.hostname === "dlmm.datapi.meteora.ag") return Response.json({ pages: 1, data: [makePool(), makePool(2), makePool(3)] });
-    assert.equal(url.hostname, "api.jup.ag");
+  t.mock.method(globalThis, "fetch", async () => {
     setMeta(db, "position_discovery_succeeded_at", String(now));
-    return Response.json([makeToken(), makeToken(2), makeToken(3)]);
+    return pageResponse([makePool(), makePool(2), makePool(3)]);
   });
   const handler = handlerFor(db, appConfig, "fake-api-key");
   const reply = await handler.onCommand("/topcareless", []);
@@ -265,160 +239,9 @@ test("Careless uses real cached positions after screening, ignoring virtual and 
   const stored = db.prepare("SELECT last_checked FROM positions WHERE id=?").get(key(151))!;
   assert.equal(stored.last_checked, now);
   // No additional metadata fetch resets the stale timestamp during this request.
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => new URL(input).hostname === "dlmm.datapi.meteora.ag"
-    ? Response.json({ pages: 1, data: [makePool(), makePool(2)] }) : Response.json([makeToken(), makeToken(2)]));
+  t.mock.method(globalThis, "fetch", async () => pageResponse([makePool(), makePool(2)]));
   const stale = await handler.onCallback("cmd:/topcareless");
   assert.match(stale!.text, /data terakhir/); assert.match(stale!.text, /BELUM TERVERIFIKASI/);
-});
-
-test("Careless requires inclusive market cap, token age and TVL thresholds and exact SOL pairs", () => {
-  const token = makeToken();
-  const metadata = new Map([[key(1), token]]);
-  assert.equal(selectTopCareless([makePool()], metadata, config, now).length, 1);
-  assert.equal(selectTopCareless([makePool(1, { token_x: { ...makePool().token_x, market_cap: 1_499_999 } })], metadata, config, now).length, 0);
-  assert.equal(selectTopCareless([makePool(1, { tvl: 4999.99 })], metadata, config, now).length, 0);
-  assert.equal(selectTopCareless([makePool()], new Map([[key(1), makeToken(1, 2.9999)]]), config, now).length, 0);
-  assert.equal(selectTopCareless([makePool()], new Map([[key(1), makeToken(1, 365)]]), config, now).length, 1);
-  assert.equal(selectTopCareless([makePool(1, { token_x: { address: sol }, token_y: makePool().token_x })], metadata, config, now).length, 1);
-  assert.equal(selectTopCareless([makePool(1, { token_y: { address: key(2), symbol: "SOL" } })], metadata, config, now).length, 0);
-  assert.equal(selectTopCareless([makePool()], new Map(), config, now).length, 0);
-  assert.equal(selectTopCareless([makePool(1, { address: "bad-link" })], metadata, config, now).length, 0);
-  assert.equal(selectTopCareless([makePool(1, { volume: {} })], metadata, config, now).length, 0);
-});
-
-test("Careless calculates simple fee percentages and validates ranking inputs without requiring APR", () => {
-  const metadata = new Map([[key(1), makeToken()]]);
-  const [pool] = selectTopCareless([makePool(1, { tvl: "10000", volume: { "24h": "100000" }, pool_config: { base_fee_pct: "0.3" } })], metadata, config, now);
-  assert.equal(pool.baseFeePercent, 0.3);
-  assert.equal(pool.simpleFeeTvl24hPercent, 3);
-  const text = formatTopCareless({ pools: [pool], limited: false }, config, "Asia/Jakarta");
-  assert.match(text, /Simple Fee\/TVL 24j <b>3\.00%<\/b>/);
-  assert.match(text, /Base fee 0\.30% · Bin step/);
-  for (const value of [undefined, null, true, NaN, -1, "", " ", "bad", Infinity]) {
-    assert.equal(selectTopCareless([makePool(1, { pool_config: { base_fee_pct: value } })], metadata, config, now).length, 0);
-    assert.equal(selectTopCareless([makePool(1, { volume: { "24h": value } })], metadata, config, now).length, 0);
-    assert.equal(selectTopCareless([makePool(1, { tvl: value })], metadata, config, now).length, 0);
-  }
-  assert.equal(selectTopCareless([makePool(1, { pool_config: {} })], metadata, config, now).length, 0);
-  assert.equal(selectTopCareless([makePool(1, { pool_config: { base_fee_pct: 101 } })], metadata, config, now).length, 0);
-  assert.equal(selectTopCareless([makePool(1, { tvl: 0 })], metadata, { ...config, min_tvl_usd: 0 }, now).length, 0);
-  assert.equal(selectTopCareless([makePool(1, { tvl: 1e-300, volume: { "24h": 1e308 } })], metadata, { ...config, min_tvl_usd: 0 }, now).length, 0);
-  for (const overrides of [{ volume: { "24h": 0 } }, { pool_config: { base_fee_pct: 0 } }]) {
-    assert.equal(selectTopCareless([makePool(1, overrides)], metadata, config, now)[0].simpleFeeTvl24hPercent, 0);
-  }
-  for (const ratio of [undefined, NaN, -1, "", " ", "bad", Infinity]) {
-    const [withoutApr] = selectTopCareless([makePool(1, { fee_tvl_ratio: { "24h": ratio } })], metadata, config, now);
-    assert.equal(withoutApr.simpleFeeTvl24hPercent, 1);
-    assert.equal(withoutApr.feeTvl24hPercent, undefined);
-    assert.equal(withoutApr.aprPercent, undefined);
-    const text = formatTopCareless({ pools: [withoutApr], limited: false }, config, "Asia/Jakarta");
-    assert.match(text, /APR estimasi <b>Belum tersedia<\/b>/);
-    assert.match(text, /Fee\/TVL 24j Belum tersedia/);
-    assert.doesNotMatch(text, /NaN|Infinity|undefined|Belum tersedia%/);
-  }
-  const [overflowApr] = selectTopCareless([makePool(1, { fee_tvl_ratio: { "24h": 1e308 } })], metadata, config, now);
-  assert.equal(overflowApr.aprPercent, undefined);
-  const [zeroApr] = selectTopCareless([makePool(1, { fee_tvl_ratio: { "24h": 0 } })], metadata, config, now);
-  assert.equal(zeroApr.aprPercent, 0);
-});
-
-test("Careless keeps each pool, ranks simple fee before APR, and annualizes comparison APR once", () => {
-  const pools = [makePool(), makePool(1, { address: key(103), volume: { "24h": 100_000 } }),
-    makePool(1, { address: key(104), fee_tvl_ratio: { "24h": "0.2" }, volume: { "24h": 1 } })];
-  const selected = selectTopCareless([...pools, pools[0]], new Map([[key(1), makeToken()]]), config, now);
-  assert.deepEqual(selected.map(pool => pool.address), [key(103), key(101), key(104)]);
-  assert.equal(selected[0].simpleFeeTvl24hPercent, 2);
-  assert.equal(selected[1].simpleFeeTvl24hPercent, 1);
-  assert.equal(selected[1].feeTvl24hPercent, 0.1);
-  assert.equal(selected[1].aprPercent, 36.5);
-  const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now));
-  assert.match(text, /36\.50%/);
-  assert.match(text, /Fee\/TVL 24j 0\.10%/);
-  assert.match(text, /Urut Simple Fee\/TVL 24j/);
-  assert.match(text, /Simple Fee\/TVL 24j <b>&lt;0\.01%<\/b>/);
-  assert.match(text, /Bin step <b>25<\/b>/);
-  assert.ok(text.includes(`CA <code>${key(1)}</code>`));
-  assert.ok(text.includes(`https://app.meteora.ag/dlmm/${key(104)}`));
-  assert.match(text, /tanpa farm reward/);
-  const hostile = { ...selected[0], symbol: "<b>&", name: "</a><script>bad</script>", binStep: undefined };
-  const escaped = formatTopCareless({ pools: [hostile], limited: true }, config, "Asia/Jakarta");
-  assert.match(escaped, /&lt;b&gt;&amp;/);
-  assert.doesNotMatch(escaped, /<script>/);
-  assert.match(escaped, /Bin step <b>Belum tersedia/);
-  assert.match(escaped, /Cakupan terbatas/);
-  assert.match(formatTopCareless({ pools: [], limited: false }, config, "Asia/Jakarta"), /Belum ada pool/);
-});
-
-test("Careless breaks equal simple fee scores by volume then pool address before limiting", () => {
-  const pools = [makePool(1, { address: key(103) }), makePool(1, { address: key(104), tvl: 10_000, volume: { "24h": 100_000 } }), makePool()];
-  const selected = selectTopCareless(pools, new Map([[key(1), makeToken()]]), { ...config, limit: 2 }, now);
-  assert.deepEqual(selected.map(pool => pool.address), [key(104), ...[key(101), key(103)].sort((a, b) => a.localeCompare(b)).slice(0, 1)]);
-});
-
-test("Careless cards highlight ranked scores, group pool data, and show the update timezone", () => {
-  const pools = selectTopCareless(Array.from({ length: 4 }, (_, i) => makePool(i + 1)),
-    new Map(Array.from({ length: 4 }, (_, i) => [key(i + 1), makeToken(i + 1)])), config, now);
-  const text = formatTopCareless({ pools, limited: false }, config, "Asia/Jakarta", new Date(now));
-  assert.match(text, /📋 <b>4\/10 pool<\/b> · Meteora DLMM · Pasangan SOL/);
-  assert.match(text, /🔎 <b>Filter aktif<\/b>/);
-  assert.match(text, /Diperbarui .*07\.00.*WIB/);
-  for (const [index, marker] of ["🥇", "🥈", "🥉", "▫️"].entries()) {
-    assert.ok(text.includes(`${marker} <b>${index + 1}. TOKEN/SOL</b>\n<i>Token</i>`));
-  }
-  assert.ok(text.indexOf("💎 Simple Fee/TVL") < text.indexOf("💧 TVL"));
-  assert.match(text, /💧 TVL <b>\$5\.0K<\/b> · 📊 Volume 24j <b>\$50\.0K<\/b>/);
-  assert.match(text, /ℹ️ <b>Cara baca<\/b>/);
-  const empty = formatTopCareless({ pools: [], limited: false }, config, "Asia/Jakarta");
-  assert.match(empty, /Ubah Filter atau coba Refresh/);
-});
-
-test("Careless scans later pages after filling results and queries token age once per mint", async (t) => {
-  t.mock.method(Date, "now", () => now);
-  const calls: URL[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL, init?: RequestInit) => {
-    const url = new URL(input); calls.push(url);
-    assert.equal(init?.redirect, "error");
-    assert.ok(init?.signal);
-    if (url.hostname === "api.jup.ag") {
-      assert.equal(new Headers(init?.headers).get("x-api-key"), "fake-api-key");
-      assert.equal(url.searchParams.get("query"), key(1));
-      return Response.json([makeToken()]);
-    }
-    assert.equal(url.searchParams.get("sort_by"), "fee_tvl_ratio_24h:desc,volume_24h:desc");
-    assert.equal(url.searchParams.get("filter_by"), "tvl>=5000");
-    assert.equal(url.searchParams.get("page_size"), "100");
-    const page = Number(url.searchParams.get("page"));
-    return Response.json({ pages: 3, data: [makePool(1, { address: key(100 + page), volume: { "24h": page * 50_000 }, fee_tvl_ratio: { "24h": 0.4 - page * 0.1 } })] });
-  });
-  const result = await fetchTopCareless({ ...config, limit: 2 }, "fake-api-key", poolsUrl, tokensUrl);
-  assert.equal(result.pools.length, 2);
-  assert.equal(result.limited, false);
-  assert.deepEqual(result.pools.map(pool => pool.address), [key(103), key(102)]);
-  assert.equal(calls.filter(url => url.hostname === "api.jup.ag").length, 1);
-  assert.equal(calls.filter(url => url.hostname !== "api.jup.ag").length, 3);
-});
-
-test("Careless batches unique mints across all pages before selecting the best pools", async (t) => {
-  t.mock.method(Date, "now", () => now);
-  const pools = Array.from({ length: 120 }, (_, i) => makePool(i + 1, { volume: { "24h": (i + 1) * 50_000 } }));
-  const batches: string[][] = [];
-  let poolRequests = 0;
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-    const url = new URL(input);
-    if (url.hostname === "dlmm.datapi.meteora.ag") {
-      poolRequests++;
-      const page = Number(url.searchParams.get("page"));
-      return Response.json({ pages: 2, data: [...pools.slice((page - 1) * 60, page * 60), pools[0]] });
-    }
-    assert.equal(poolRequests, 2);
-    const batch = url.searchParams.get("query")!.split(",");
-    batches.push(batch);
-    return Response.json(batch.map((id) => ({ ...makeToken(), id })));
-  });
-  const result = await fetchTopCareless({ ...config, limit: 2 }, "fake-api-key", poolsUrl, tokensUrl);
-  assert.deepEqual(batches.map((batch) => batch.length), [100, 20]);
-  assert.equal(new Set(batches.flat()).size, 120);
-  assert.deepEqual(result.pools.map((pool) => pool.address), [pools[119].address, pools[118].address]);
 });
 
 test("Careless retries rate limits using provider headers or bounded fallback delays", async (t) => {
@@ -440,11 +263,10 @@ test("Careless retries rate limits using provider headers or bounded fallback de
       waits.push(delay); clock += delay; callback(); return 0 as any;
     });
     t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-      if (new URL(input).hostname === "dlmm.datapi.meteora.ag") return Response.json({ pages: 1, data: [makePool()] });
       if (++requests <= scenario.failures) return Response.json({}, { status: 429, headers: scenario.headers });
-      return Response.json([makeToken()]);
+      return pageResponse([makePool()]);
     });
-    const result = await fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl);
+    const result = await fetchTopCareless(config);
     assert.equal(result.pools.length, 1);
     assert.equal(requests, scenario.failures + 1);
     assert.deepEqual(waits, scenario.waits);
@@ -469,7 +291,7 @@ test("Careless stops retries at the attempt or wait budget and gives Refresh gui
       requests++;
       return Response.json({}, { status: 429, headers: scenario.headers });
     });
-    await assert.rejects(fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl), (error) => {
+    await assert.rejects(fetchTopCareless(config), (error) => {
       assert.match(String(error), /HTTP 429.*Coba Refresh/);
       assert.match(String(error), scenario.hint);
       assert.doesNotMatch(String(error), /fake-api-key/);
@@ -480,109 +302,12 @@ test("Careless stops retries at the attempt or wait budget and gives Refresh gui
   });
 });
 
-test("Careless reports capped coverage even when results are full and completes exactly 20 pages", async (t) => {
-  t.mock.method(Date, "now", () => now);
-  let pages = 21, poolRequests = 0, tokenRequests = 0;
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-    const url = new URL(input);
-    if (url.hostname === "api.jup.ag") {
-      tokenRequests++;
-      return Response.json([makeToken()]);
-    }
-    poolRequests++;
-    const page = Number(url.searchParams.get("page"));
-    return Response.json({ pages, data: [makePool(1, { address: key(100 + page), volume: { "24h": page * 50_000 } })] });
-  });
-  const result = await fetchTopCareless({ ...config, limit: 1 }, "fake-api-key", poolsUrl, tokensUrl);
-  assert.equal(poolRequests, 20);
-  assert.equal(tokenRequests, 1);
-  assert.equal(result.pools.length, 1);
-  assert.equal(result.pools[0].address, key(120));
-  assert.equal(result.limited, true);
-  assert.match(formatTopCareless(result, { ...config, limit: 1 }, "Asia/Jakarta"), /ranking hanya dari pool yang diperiksa/);
-  pages = 20;
-  const complete = await fetchTopCareless({ ...config, limit: 1 }, "fake-api-key", poolsUrl, tokensUrl);
-  assert.equal(poolRequests, 40);
-  assert.equal(complete.limited, false);
-});
-
-test("Careless bounds scanning and rejects malformed, timed out and non-rate-limit errors without retry", async (t) => {
-  let calls = 0;
-  let response: any = { pages: 21, data: [makePool(1, { tvl: 0 })] };
-  let status = 200;
-  let fails = false;
-  t.mock.method(globalThis, "fetch", async () => {
-    calls++;
-    if (fails) throw new Error("fake-api-key must not leak");
-    return Response.json(response, { status });
-  });
-  const result = await fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl);
-  assert.equal(calls, 20);
-  assert.equal(result.limited, true);
-  for (const body of [null, { data: [], pages: -1 }, { data: [null], pages: 1 }, { data: {}, pages: 1 }, { data: [], pages: 1.1 }]) {
-    response = body;
-    await assert.rejects(fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl), /tidak sesuai format/);
-  }
-  for (const code of [400, 401, 403, 500]) {
-    status = code;
-    const previousCalls = calls;
-    await assert.rejects(fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl), new RegExp(`HTTP ${code}`));
-    assert.equal(calls, previousCalls + 1);
-  }
-  fails = true;
-  await assert.rejects(fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl), error => {
-    assert.doesNotMatch(String(error), /fake-api-key/); return true;
-  });
-});
-
-test("Careless logs a safe error and returns no partial ranking when a later metadata batch fails", async (t) => {
-  const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
-  const db = openDatabase(":memory:"); t.after(() => db.close());
-  const warning = t.mock.method(console, "warn", () => {});
-  const pools = Array.from({ length: 120 }, (_, i) => makePool(i + 1));
-  let metadataRequests = 0;
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-    const url = new URL(input);
-    if (url.hostname === "dlmm.datapi.meteora.ag") {
-      const page = Number(url.searchParams.get("page"));
-      return Response.json({ pages: 2, data: pools.slice((page - 1) * 60, page * 60) });
-    }
-    if (++metadataRequests === 2) return Response.json({ message: "fake-api-key must not leak" }, { status: 401 });
-    return Response.json(url.searchParams.get("query")!.split(",").map((id) => ({ ...makeToken(), id })));
-  });
-  const reply = await handlerFor(db, appConfig, "fake-api-key").onCommand("/topcareless", []);
-  assert.match(reply?.text ?? "", /Screening gagal:.*api.jup.ag.*HTTP 401/);
-  assert.doesNotMatch(reply?.text ?? "", /fake-api-key|Buka Meteora|Belum ada pool/);
-  assert.equal(reply?.parseMode, undefined);
-  assert.deepEqual(reply?.replyMarkup?.inline_keyboard[0].map((button: any) => button.callback_data),
-    ["cmd:/topcareless", "config:section:careless"]);
-  assert.equal(metadataRequests, 2);
-  assert.equal(warning.mock.callCount(), 1);
-  const logged = warning.mock.calls[0].arguments.join(" ");
-  assert.match(logged, /Top Careless screening failed:.*HTTP 401/);
-  assert.doesNotMatch(logged, /fake-api-key/);
-});
-
-test("Careless rejects invalid metadata JSON and shapes without retry or empty results", async (t) => {
-  let requests = 0;
-  let invalidJson = false;
-  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
-    if (new URL(input).hostname === "dlmm.datapi.meteora.ag") return Response.json({ pages: 1, data: [makePool()] });
-    requests++;
-    return invalidJson ? new Response("{broken") : Response.json({ message: "not an array" });
-  });
-  await assert.rejects(fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl), /Respons token Jupiter tidak sesuai format/);
-  invalidJson = true;
-  await assert.rejects(fetchTopCareless(config, "fake-api-key", poolsUrl, tokensUrl), /JSON yang tidak valid/);
-  assert.equal(requests, 2);
-});
-
 test("Careless config defaults old files, validates filters and persists Telegram changes without restart", async () => {
   const raw = JSON.parse(await readFile("config.example.json", "utf8"));
   delete raw.top_careless;
   raw.top_trending = { enabled: true };
   const appConfig = parseConfig(JSON.stringify(raw));
-  assert.deepEqual(appConfig.top_careless, { ...config, min_market_cap_usd: 1_500_000 });
+  assert.deepEqual(appConfig.top_careless, config);
   for (const [path, value] of [["limit", 0], ["limit", 101], ["limit", 1.5], ["min_tvl_usd", -1], ["min_token_age_days", null], ["enabled", "true"]]) {
     assert.throws(() => prepareConfigUpdate(appConfig, `top_careless.${path}`, JSON.stringify(value)));
   }
@@ -602,15 +327,16 @@ test("Careless config defaults old files, validates filters and persists Telegra
     assert.deepEqual(parseConfig(await readFile(path, "utf8")).top_careless, appConfig.top_careless);
     appConfig.swap.enabled = false;
     const noKey = handlerFor(db, appConfig, undefined, path);
-    const rejected = await noKey.onCommand("/config", ["set", "top_careless.enabled", "true"]);
-    assert.match(rejected?.text ?? "", /JUPITER_API_KEY/);
-    assert.equal(appConfig.top_careless.enabled, false);
+    const enabled = await noKey.onCommand("/config", ["set", "top_careless.enabled", "true"]);
+    assert.match(enabled?.text ?? "", /CONFIG DISIMPAN/);
+    assert.equal(appConfig.top_careless.enabled, true);
     const allowed = await noKey.onCommand("/config", ["set", "top_careless.limit", "25"]);
     assert.match(allowed?.text ?? "", /CONFIG DISIMPAN/);
     assert.equal(appConfig.top_careless.limit, 25);
     const swapRejected = await noKey.onCommand("/config", ["set", "swap.enabled", "true"]);
     assert.match(swapRejected?.text ?? "", /JUPITER_API_KEY/);
     assert.equal(appConfig.swap.enabled, false);
+    appConfig.top_careless.enabled = false;
     assert.match((await noKey.onCommand("/topcareless", []))?.text ?? "", /dinonaktifkan/);
   } finally { db.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -631,11 +357,10 @@ for (const count of [0, 1, 10]) {
     const message = { chat: { id: 42 }, from: { id: 42 }, message_id: 10 };
     t.mock.method(globalThis, "fetch", async (input: string | URL, init?: RequestInit) => {
       const url = new URL(input);
-      if (url.hostname === "dlmm.datapi.meteora.ag") {
+      if (url.hostname === "pool-discovery-api.datapi.meteora.ag") {
         poolRequests++;
-        return Response.json({ pages: 1, data: Array.from({ length: count }, (_, i) => makePool(i + 1)) });
+        return pageResponse(Array.from({ length: count }, (_, i) => makePool(i + 1, { token_x: { ...makePool(i + 1).token_x, symbol: "<".repeat(16), name: "&".repeat(32) } })));
       }
-      if (url.hostname === "api.jup.ag") return Response.json(Array.from({ length: count }, (_, i) => ({ ...makeToken(i + 1), symbol: "<".repeat(16), name: "&".repeat(32) })));
       const method = url.pathname.split("/").at(-1)!;
       if (method === "getUpdates") {
         if (++polls === 2) { shutdown.abort(); return Response.json({ ok: true, result: [] }); }
@@ -656,7 +381,7 @@ for (const count of [0, 1, 10]) {
     const rendered = replies.filter(reply => reply.body.parse_mode === "HTML");
     const text = rendered.map(reply => reply.body.text).join("\n");
     assert.equal((text.match(/Buka Meteora DLMM/g) ?? []).length, count * 2);
-    assert.equal((text.match(/Simple Fee\/TVL 24j <b>1\.00%<\/b>/g) ?? []).length, count * 2);
+    assert.equal((text.match(/Fee\/Active TVL 24j <b>4\.00%<\/b>/g) ?? []).length, count * 2);
     assert.equal((text.match(/Base fee 0\.10% · Bin step/g) ?? []).length, count * 2);
     assert.equal((text.match(/👛 Token: <b>/g) ?? []).length, count * 2);
     assert.equal((text.match(/🏊 Pool ini: <b>AKTIF<\/b>/g) ?? []).length, count > 0 ? 2 : 0);
@@ -666,7 +391,7 @@ for (const count of [0, 1, 10]) {
       assert.deepEqual(body.link_preview_options, { is_disabled: true });
       assert.ok(body.text.length <= 3500);
       assert.doesNotMatch(body.text, /<<<<|&&&&/);
-      assert.match(body.text, /&lt;|&amp;|APR/);
+      assert.match(body.text, /&lt;|&amp;|Active TVL/);
       for (const tag of ["b", "i", "code", "a"]) {
         assert.equal((body.text.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "g")) ?? []).length,
           (body.text.match(new RegExp(`</${tag}>`, "g")) ?? []).length, `unbalanced ${tag} in message chunk`);
@@ -678,3 +403,158 @@ for (const count of [0, 1, 10]) {
     else assert.ok(rendered.length > 2);
   });
 }
+
+test("Careless applies all eight web filters inclusively and uses the active-TVL ratio", () => {
+  assert.equal(selectTopCareless([makePool()], config, now).length, 1);
+  const base = makePool();
+  const rejected = [
+    { pool_type: "damm_v2" }, { pool_type: undefined },
+    { token_x: { ...base.token_x, market_cap: 999999.99 } },
+    { token_x: { ...base.token_x, created_at: now - 72 * 3600000 + 1 } },
+    { token_x: { ...base.token_x, created_at: now + 1 } },
+    { token_x: { ...base.token_x, created_at: undefined } },
+    { token_x: { ...base.token_x, organic_score: 49.999 } },
+    { token_y: { ...base.token_y, organic_score: 49.999 } },
+    { base_token_holders: 999 }, { base_token_holders: 1000.5 },
+    { tvl: 4999.99 }, { fee_active_tvl_ratio: 3.99999 },
+    { dlmm_params: { bin_step: 79 } }, { dlmm_params: {} },
+    { token_y: { ...base.token_y, address: key(99) } }, { pool_address: "invalid" },
+    { active_tvl: 0 }, { token_x: { ...base.token_x, organic_score: 101 } },
+  ];
+  for (const overrides of rejected) assert.equal(selectTopCareless([makePool(1, overrides)], config, now).length, 0, JSON.stringify(overrides));
+  const [pool] = selectTopCareless([makePool(1, { volume: 0, fee_pct: 0, fee_active_tvl_ratio: 4 })], config, now);
+  assert.equal(pool.feeActiveTvl24hPercent, 4);
+  assert.equal(pool.ageDays * 24, 72);
+  for (const field of ["tvl", "active_tvl", "volume", "fee_pct", "fee_active_tvl_ratio"]) {
+    for (const value of [undefined, null, true, NaN, -1, "", "bad", Infinity]) {
+      assert.equal(selectTopCareless([makePool(1, { [field]: value })], config, now).length, 0);
+    }
+  }
+  assert.equal(selectTopCareless([makePool(1, { fee_pct: 101 })], config, now).length, 0);
+});
+
+test("Careless handles both SOL orientations and blacklist/exclusions before limiting", async (t) => {
+  const pool = makePool();
+  const flipped = makePool(1, { pool_address: key(110), token_x: pool.token_y, token_y: pool.token_x });
+  const cfg = { ...config, limit: 1, blacklisted_mints: [key(1)] };
+  const data = [pool, flipped, makePool(2), makePool(3, { fee_active_tvl_ratio: 5 })];
+  assert.equal(selectTopCareless([flipped], config, now)[0].mint, key(1));
+  assert.deepEqual(selectTopCareless(data, cfg, now).map(x => x.mint), [key(3)]);
+  t.mock.method(Date, "now", () => now);
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (input: any) => {
+    calls++; assert.equal(new URL(input).hostname, "pool-discovery-api.datapi.meteora.ag");
+    return pageResponse(data);
+  });
+  const result = await fetchTopCareless(cfg, { excludedMints: new Set([key(3)]) });
+  assert.deepEqual(result.pools.map(x => x.mint), [key(2)]);
+  assert.equal(calls, 1);
+  assert.deepEqual((await fetchTopCareless(config, { minBinStep: 100 })).pools, []);
+});
+
+test("Careless ranks Fee/Active TVL then volume and address, preserving separate pools", () => {
+  const pools = [makePool(), makePool(1, { pool_address: key(103), fee_active_tvl_ratio: 5 }),
+    makePool(1, { pool_address: key(104), volume: 100000 })];
+  const selected = selectTopCareless([...pools, pools[0]], config, now);
+  assert.deepEqual(selected.map(x => x.address), [key(103), key(104), key(101)]);
+  const tied = selectTopCareless([makePool(1, { pool_address: key(103) }), makePool()], config, now);
+  assert.deepEqual(tied.map(x => x.address), [key(103), key(101)].sort((a,b) => a.localeCompare(b)));
+  const text = formatTopCareless({ pools: selected, limited: false }, config, "Asia/Jakarta", new Date(now));
+  for (const pattern of [/Fee\/Active TVL 24j <b>5\.00%/, /Organic Score ≥ 50/, /Holders ≥ 1000/, /Umur ≥ 72 jam/, /Bin step ≥ 80/, /Active TVL/, /bukan jaminan/]) assert.match(text, pattern);
+  assert.doesNotMatch(text, /Simple Fee|APR|firstPool Jupiter/);
+  const hostile = { ...selected[0], symbol: "<b>&", name: "</a><script>bad</script>" };
+  assert.doesNotMatch(formatTopCareless({ pools: [hostile], limited: false }, config, "UTC"), /<script>/);
+});
+
+test("Discovery uses the exact web endpoint, 24h window, numeric percentages and cursor pagination", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  const urls: URL[] = [];
+  t.mock.method(globalThis, "fetch", async (input: any, init: any) => {
+    const u = new URL(input); urls.push(u);
+    assert.equal(init.redirect, "error"); assert.ok(init.signal);
+    assert.equal(u.origin, "https://pool-discovery-api.datapi.meteora.ag");
+    assert.equal(u.searchParams.get("timeframe"), "24h");
+    assert.equal(u.searchParams.get("category"), "all");
+    assert.equal(u.searchParams.get("sort_by"), "fee_active_tvl_ratio:desc,volume:desc");
+    assert.equal(u.searchParams.get("page_size"), "100");
+    const filter = u.searchParams.get("filter_by")!;
+    for (const term of ["pool_type=dlmm", "tvl>=5000", "fee_active_tvl_ratio>=4", "base_token_market_cap>=1000000", "base_token_holders>=1000", "base_token_organic_score>=50", "quote_token_organic_score>=50", "dlmm_bin_step>=80", `base_token_created_at<=${now - 72 * 3600000}`]) assert.ok(filter.split("&&").includes(term), term);
+    if (urls.length === 1) {
+      assert.equal(u.searchParams.get("after_key"), null);
+      return pageResponse([makePool()], true, "cursor-1");
+    }
+    assert.equal(u.searchParams.get("after_key"), "cursor-1");
+    return pageResponse([makePool(2, { fee_active_tvl_ratio: 8 })]);
+  });
+  const result = await fetchTopCareless({ ...config, limit: 1 });
+  assert.equal(urls.length, 2); assert.equal(result.limited, false);
+  assert.equal(result.pools[0].address, key(102));
+});
+
+test("Discovery caps 20 pages, rejects invalid cursors/schemas and never returns partial results", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  let calls = 0, complete = false;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return pageResponse([makePool()], !(complete && calls % 20 === 0), `cursor-${calls}`);
+  });
+  assert.equal((await fetchTopCareless(config)).limited, true); assert.equal(calls, 20);
+  complete = true;
+  assert.equal((await fetchTopCareless(config)).limited, false); assert.equal(calls, 40);
+  for (const body of [null, { data: [], has_more: true, after_key: "c" }, { data: [null], has_more: false },
+    { data: {}, has_more: false }, { data: [], has_more: 1 }, { data: [], has_more: false, after_key: null },
+    { data: [makePool()], has_more: true }, { data: [makePool()], has_more: true, after_key: "x".repeat(8193) }]) {
+    if (body?.has_more === false && Array.isArray(body.data) && body.data.length === 0) continue;
+    t.mock.method(globalThis, "fetch", async () => Response.json(body));
+    await assert.rejects(fetchTopCareless(config), /tidak sesuai format/);
+  }
+  t.mock.method(globalThis, "fetch", async () => pageResponse([makePool()], true, "repeated"));
+  await assert.rejects(fetchTopCareless(config), /tidak sesuai format/);
+  for (const code of [400, 401, 403, 500]) {
+    t.mock.method(globalThis, "fetch", async () => new Response(null, { status: code }));
+    await assert.rejects(fetchTopCareless(config), new RegExp(`HTTP ${code}`));
+  }
+  t.mock.method(globalThis, "fetch", async () => new Response("not-json"));
+  await assert.rejects(fetchTopCareless(config), /JSON yang tidak valid/);
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("secret must not leak"); });
+  await assert.rejects(fetchTopCareless(config), /gagal diakses/);
+});
+
+test("Discovery failures on later pages produce a safe Telegram error, not partial ranking", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  const appConfig = parseConfig(await readFile("config.example.json", "utf8"));
+  let calls = 0;
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(globalThis, "fetch", async () => ++calls === 1 ? pageResponse([makePool()], true, "next") : new Response("secret", { status: 500 }));
+  const reply = await handlerFor(db, appConfig).onCommand("/topcareless", []);
+  assert.match(reply!.text, /Screening gagal:.*HTTP 500/);
+  assert.doesNotMatch(reply!.text, /Buka Meteora|secret/);
+});
+
+test("new Careless config fields default older files, validate and hot-apply", async () => {
+  const raw = JSON.parse(await readFile("config.example.json", "utf8"));
+  const fields = ["min_organic_score", "min_holders", "min_fee_active_tvl_24h_percent", "min_bin_step"];
+  for (const field of fields) delete raw.top_careless[field];
+  const cfg = parseConfig(JSON.stringify(raw));
+  for (const field of fields) assert.equal((cfg.top_careless as any)[field], (config as any)[field]);
+  for (const [field, value] of [["min_organic_score", 101], ["min_organic_score", -1], ["min_holders", 1.5], ["min_holders", Number.MAX_SAFE_INTEGER+1], ["min_fee_active_tvl_24h_percent", -1], ["min_bin_step", 0], ["min_bin_step", 80.5], ...fields.map(field => [field, null])]) {
+    assert.throws(() => prepareConfigUpdate(cfg, `top_careless.${field}`, JSON.stringify(value)));
+  }
+  for (const [field, value] of [["min_organic_score", 60], ["min_holders", 2000], ["min_fee_active_tvl_24h_percent", 5], ["min_bin_step", 100]]) {
+    const update = prepareConfigUpdate(cfg, `top_careless.${field}`, String(value));
+    assert.equal(update.restartRequired, false);
+    assert.equal((update.config.top_careless as any)[field], value);
+  }
+});
+
+test("sanitized Meteora web discovery fixture retains provider ratio, score, holders and bin step", async () => {
+  const pool = JSON.parse(await readFile("test/fixtures/meteora-discovery.json", "utf8"));
+  const selected = selectTopCareless([pool], config, Date.UTC(2026, 10, 2, 12));
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].feeActiveTvl24hPercent, pool.fee_active_tvl_ratio);
+  assert.equal(selected[0].activeTvlUsd, pool.active_tvl);
+  assert.equal(selected[0].organicScore, pool.token_x.organic_score);
+  assert.equal(selected[0].holders, pool.base_token_holders);
+  assert.equal(selected[0].binStep, pool.dlmm_params.bin_step);
+});

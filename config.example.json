@@ -59,10 +59,14 @@
   "top_careless": {
     "enabled": true,
     "limit": 10,
-    "min_market_cap_usd": 1500000,
+    "min_market_cap_usd": 1000000,
     "min_token_age_days": 3,
     "min_tvl_usd": 5000,
-    "blacklisted_mints": []
+    "blacklisted_mints": [],
+    "min_organic_score": 50,
+    "min_holders": 1000,
+    "min_fee_active_tvl_24h_percent": 4,
+    "min_bin_step": 80
   },
   "jupiter": {
     "base_url": "https://api.jup.ag/swap/v2",

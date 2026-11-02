@@ -4,28 +4,18 @@ import { SOL_MINT } from "../positions/monitor.ts";
 import type { Position } from "../domain/types.ts";
 
 type Token = {
-  address?: string;
-  name?: string;
-  symbol?: string;
-  market_cap?: number | string;
+  address?: string; name?: string; symbol?: string;
+  market_cap?: number | string; created_at?: number;
+  organic_score?: number; holders?: number;
 };
-
 type Pool = {
-  address?: string;
-  name?: string;
-  token_x?: Token;
-  token_y?: Token;
-  tvl?: number | string;
-  volume?: Record<string, number | string | undefined>;
-  fee_tvl_ratio?: Record<string, number | string | undefined>;
-  pool_config?: { bin_step?: number; base_fee_pct?: number | string };
-};
-
-type JupiterToken = {
-  id?: string;
-  name?: string;
-  symbol?: string;
-  firstPool?: { createdAt?: string };
+  pool_address?: string; pool_type?: string;
+  token_x?: Token; token_y?: Token;
+  tvl?: number | string; active_tvl?: number | string;
+  volume?: number | string; fee_pct?: number | string;
+  fee_active_tvl_ratio?: number | string;
+  base_token_holders?: number;
+  dlmm_params?: { bin_step?: number };
 };
 
 export async function getJson<T>(url: URL, headers: Record<string, string> = {}): Promise<T> {
@@ -68,31 +58,19 @@ export async function getJson<T>(url: URL, headers: Record<string, string> = {})
 }
 
 export type TopCarelessConfig = {
-  enabled: boolean;
-  limit: number;
-  min_market_cap_usd: number;
-  min_token_age_days: number;
-  min_tvl_usd: number;
+  enabled: boolean; limit: number;
+  min_market_cap_usd: number; min_token_age_days: number; min_tvl_usd: number;
+  min_organic_score: number; min_holders: number;
+  min_fee_active_tvl_24h_percent: number; min_bin_step: number;
   blacklisted_mints: string[];
 };
 
 export type CarelessPool = {
-  address: string;
-  mint: string;
-  symbol: string;
-  name: string;
-  marketCapUsd: number;
-  ageDays: number;
-  tvlUsd: number;
-  volume24h: number;
-  baseFeePercent: number;
-  simpleFeeTvl24hPercent: number;
-  feeTvl24hPercent?: number;
-  aprPercent?: number;
-  binStep?: number;
+  address: string; mint: string; symbol: string; name: string;
+  marketCapUsd: number; ageDays: number; tvlUsd: number; activeTvlUsd: number;
+  volume24h: number; baseFeePercent: number; feeActiveTvl24hPercent: number;
+  organicScore: number; holders: number; binStep: number;
 };
-
-const comparePools = (a: CarelessPool, b: CarelessPool) => b.simpleFeeTvl24hPercent - a.simpleFeeTvl24hPercent || b.volume24h - a.volume24h || a.address.localeCompare(b.address);
 
 function numeric(value: unknown): number | undefined {
   if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return undefined;
@@ -100,89 +78,65 @@ function numeric(value: unknown): number | undefined {
   return Number.isFinite(result) && result >= 0 ? result : undefined;
 }
 
-function candidate(pool: Pool, config: TopCarelessConfig) {
-  const tvl = numeric(pool.tvl);
-  const token = pool.token_x?.address === SOL_MINT ? pool.token_y
-    : pool.token_y?.address === SOL_MINT ? pool.token_x : undefined;
-  if (typeof token?.address !== "string" || token.address === SOL_MINT || typeof pool.address !== "string" ||
-    config.blacklisted_mints.includes(token.address) ||
-    tvl === undefined || tvl <= 0 || tvl < config.min_tvl_usd ||
-    (numeric(token.market_cap) ?? -1) < config.min_market_cap_usd) return undefined;
-  try { new PublicKey(token.address); new PublicKey(pool.address); }
-  catch { return undefined; }
-  return token;
-}
-
-export function selectTopCareless(pools: Pool[], tokens: Map<string, JupiterToken>, config: TopCarelessConfig, now = Date.now()): CarelessPool[] {
+export function selectTopCareless(pools: Pool[], config: TopCarelessConfig, now = Date.now()): CarelessPool[] {
   const selected = new Map<string, CarelessPool>();
   for (const pool of pools) {
-    const token = candidate(pool, config);
-    if (!token) continue;
-    const metadata = tokens.get(token.address!);
-    const createdAt = typeof metadata?.firstPool?.createdAt === "string" ? Date.parse(metadata.firstPool.createdAt) : NaN;
-    const ageDays = (now - createdAt) / 86_400_000;
-    const volume = numeric(pool.volume?.["24h"]);
-    const baseFeePercent = numeric(pool.pool_config?.base_fee_pct);
-    const ratio = numeric(pool.fee_tvl_ratio?.["24h"]);
-    if (!Number.isFinite(ageDays) || ageDays < config.min_token_age_days || ageDays < 0 ||
-      volume === undefined || baseFeePercent === undefined || baseFeePercent > 100) continue;
-    // Base fee is a percentage, so /100 for the fee and ×100 for Fee/TVL cancel out.
-    const simpleFeeTvl24hPercent = volume / numeric(pool.tvl)! * baseFeePercent;
-    if (!Number.isFinite(simpleFeeTvl24hPercent)) continue;
-    selected.set(pool.address!, {
-      address: pool.address!, mint: token.address!,
-      symbol: typeof metadata?.symbol === "string" && metadata.symbol ? metadata.symbol : typeof token.symbol === "string" && token.symbol ? token.symbol : "UNKNOWN",
-      name: typeof metadata?.name === "string" && metadata.name ? metadata.name : typeof token.name === "string" && token.name ? token.name : "Unknown token",
-      marketCapUsd: numeric(token.market_cap)!,
-      ageDays, tvlUsd: numeric(pool.tvl)!, volume24h: volume,
-      baseFeePercent, simpleFeeTvl24hPercent,
-      // The API ratio is already a percentage; annualize once without compounding.
-      ...(ratio === undefined ? {} : { feeTvl24hPercent: ratio }),
-      ...(ratio !== undefined && Number.isFinite(ratio * 365) ? { aprPercent: ratio * 365 } : {}),
-      ...(Number.isSafeInteger(pool.pool_config?.bin_step) && pool.pool_config!.bin_step! > 0
-        ? { binStep: pool.pool_config!.bin_step } : {}),
+    const solIsX = pool.token_x?.address === SOL_MINT;
+    const token = solIsX ? pool.token_y : pool.token_y?.address === SOL_MINT ? pool.token_x : undefined;
+    if (pool.pool_type !== "dlmm" || !token?.address || token.address === SOL_MINT || !pool.pool_address ||
+        config.blacklisted_mints.includes(token.address)) continue;
+    try { new PublicKey(token.address); new PublicKey(pool.pool_address); } catch { continue; }
+    const cap = numeric(token.market_cap), tvl = numeric(pool.tvl), activeTvl = numeric(pool.active_tvl);
+    const volume = numeric(pool.volume), fee = numeric(pool.fee_pct), ratio = numeric(pool.fee_active_tvl_ratio);
+    const step = pool.dlmm_params?.bin_step, holders = solIsX ? token.holders : pool.base_token_holders;
+    const ageDays = Number.isSafeInteger(token.created_at) && token.created_at! > 0 ? (now - token.created_at!) / 86_400_000 : NaN;
+    const scores = [pool.token_x?.organic_score, pool.token_y?.organic_score];
+    if (cap === undefined || cap < config.min_market_cap_usd || tvl === undefined || tvl <= 0 || tvl < config.min_tvl_usd ||
+        activeTvl === undefined || activeTvl <= 0 || volume === undefined || fee === undefined || fee > 100 ||
+        ratio === undefined || ratio < config.min_fee_active_tvl_24h_percent ||
+        !Number.isSafeInteger(step) || step! < config.min_bin_step ||
+        !Number.isSafeInteger(holders) || holders! < config.min_holders || holders! < 0 ||
+        !Number.isFinite(ageDays) || ageDays < 0 || ageDays < config.min_token_age_days ||
+        scores.some((score) => typeof score !== "number" || !Number.isFinite(score) || score < config.min_organic_score || score < 0 || score > 100)) continue;
+    selected.set(pool.pool_address, {
+      address: pool.pool_address, mint: token.address,
+      symbol: typeof token.symbol === "string" && token.symbol ? token.symbol : "UNKNOWN",
+      name: typeof token.name === "string" && token.name ? token.name : "Unknown token",
+      marketCapUsd: cap, ageDays, tvlUsd: tvl, activeTvlUsd: activeTvl,
+      volume24h: volume, baseFeePercent: fee, feeActiveTvl24hPercent: ratio,
+      organicScore: token.organic_score!, holders: holders!, binStep: step!,
     });
   }
-  return [...selected.values()].sort(comparePools)
-    .slice(0, config.limit);
+  return [...selected.values()].sort((a, b) => b.feeActiveTvl24hPercent - a.feeActiveTvl24hPercent ||
+    b.volume24h - a.volume24h || a.address.localeCompare(b.address)).slice(0, config.limit);
 }
 
-export async function fetchTopCareless(config: TopCarelessConfig, apiKey: string, meteoraBaseUrl: string, jupiterTokensBaseUrl: string, eligibility: { excludedMints?: Set<string>; minBinStep?: number } = {}): Promise<{ pools: CarelessPool[]; limited: boolean }> {
+export async function fetchTopCareless(config: TopCarelessConfig, eligibility: { excludedMints?: Set<string>; minBinStep?: number } = {}): Promise<{ pools: CarelessPool[]; limited: boolean }> {
   const pools: Pool[] = [];
-  const mints = new Set<string>();
-  const tokens = new Map<string, JupiterToken>();
   const now = Date.now();
-  let pages = 1;
-  let limited = false;
-  for (let page = 1; page <= Math.min(pages, 20); page++) {
-    const url = new URL("/pools", meteoraBaseUrl);
-    url.search = new URLSearchParams({ page: String(page), page_size: "100",
-      sort_by: "fee_tvl_ratio_24h:desc,volume_24h:desc", filter_by: `tvl>=${config.min_tvl_usd}` }).toString();
-    const body = await getJson<{ data?: Pool[]; pages?: number }>(url);
-    if (!body || !Array.isArray(body.data) || body.data.length > 100 || !Number.isSafeInteger(body.pages) || body.pages! < 0 ||
-      body.data.some((pool) => !pool || typeof pool !== "object")) throw new Error("Respons daftar pool Meteora tidak sesuai format");
-    pages = body.pages!;
-    if (page === 20 && pages > page) limited = true;
-    if (!body.data.length) break;
-    for (const pool of body.data) {
-      const token = candidate(pool, config);
-      if (token && !eligibility.excludedMints?.has(token.address!) &&
-          (eligibility.minBinStep === undefined || (Number.isSafeInteger(pool.pool_config?.bin_step) && pool.pool_config!.bin_step! >= eligibility.minBinStep))) {
-        pools.push(pool);
-        mints.add(token.address!);
-      }
+  const effective = { ...config, min_bin_step: Math.max(config.min_bin_step, eligibility.minBinStep ?? 0) };
+  const filters = ["pool_type=dlmm", `tvl>=${config.min_tvl_usd}`, `fee_active_tvl_ratio>=${config.min_fee_active_tvl_24h_percent}`,
+    `base_token_market_cap>=${config.min_market_cap_usd}`, `base_token_holders>=${config.min_holders}`,
+    `base_token_organic_score>=${config.min_organic_score}`, `quote_token_organic_score>=${config.min_organic_score}`,
+    `base_token_created_at<=${Math.floor(now - config.min_token_age_days * 86_400_000)}`, `dlmm_bin_step>=${effective.min_bin_step}`];
+  let cursor: string | undefined;
+  const seen = new Set<string>();
+  for (let page = 1; page <= 20; page++) {
+    const url = new URL("https://pool-discovery-api.datapi.meteora.ag/pools");
+    url.search = new URLSearchParams({ category: "all", page_size: "100", timeframe: "24h",
+      sort_by: "fee_active_tvl_ratio:desc,volume:desc", filter_by: filters.join("&&"), ...(cursor ? { after_key: cursor } : {}) }).toString();
+    const body = await getJson<{ data?: Pool[]; has_more?: boolean; after_key?: string }>(url);
+    if (!body || !Array.isArray(body.data) || body.data.length > 100 || typeof body.has_more !== "boolean" ||
+        body.data.some((pool) => !pool || typeof pool !== "object") ||
+        (body.has_more && (!body.data.length || typeof body.after_key !== "string" || !body.after_key || body.after_key.length > 8192 || seen.has(body.after_key)))) {
+      throw new Error("Respons daftar pool Meteora tidak sesuai format");
     }
+    pools.push(...body.data.filter((pool) => !eligibility.excludedMints?.has(
+      pool.token_x?.address === SOL_MINT ? pool.token_y?.address ?? "" : pool.token_x?.address ?? "")));
+    if (!body.has_more) return { pools: selectTopCareless(pools, effective, now), limited: false };
+    cursor = body.after_key!; seen.add(cursor);
   }
-  const uniqueMints = [...mints];
-  for (let offset = 0; offset < uniqueMints.length; offset += 100) {
-    const batch = uniqueMints.slice(offset, offset + 100);
-    const tokenUrl = new URL(`${jupiterTokensBaseUrl.replace(/\/$/, "")}/search`);
-    tokenUrl.searchParams.set("query", batch.join(","));
-    const metadata = await getJson<JupiterToken[]>(tokenUrl, { "x-api-key": apiKey });
-    if (!Array.isArray(metadata)) throw new Error("Respons token Jupiter tidak sesuai format");
-    for (const token of metadata) if (token && typeof token.id === "string" && batch.includes(token.id)) tokens.set(token.id, token);
-  }
-  return { pools: selectTopCareless(pools, tokens, config, now), limited };
+  return { pools: selectTopCareless(pools, effective, now), limited: true };
 }
 
 export type CarelessWalletPositions = {
@@ -224,11 +178,13 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
     `📋 <b>${result.pools.length}/${config.limit} pool</b> · Meteora DLMM · Pasangan SOL`,
     "",
     "🔎 <b>Filter aktif</b>",
-    `MCap ≥ ${usd(config.min_market_cap_usd)} · Umur ≥ ${config.min_token_age_days} hari`,
-    `TVL ≥ ${usd(config.min_tvl_usd)} · Maks. ${config.limit} pool`,
+    `MCap ≥ ${usd(config.min_market_cap_usd)} · Umur ≥ ${config.min_token_age_days * 24} jam`,
+    `TVL ≥ ${usd(config.min_tvl_usd)} · Bin step ≥ ${config.min_bin_step}`,
+    `Organic Score ≥ ${config.min_organic_score} · Holders ≥ ${config.min_holders}`,
+    `Fee/Active TVL 24j ≥ ${percent(config.min_fee_active_tvl_24h_percent)} · Maks. ${config.limit} pool`,
     `🚫 Blacklist manual: ${config.blacklisted_mints.length} token · /blacklist`,
     "",
-    "📊 Urut Simple Fee/TVL 24j, lalu volume 24j terbesar",
+    "📊 Urut Fee/Active TVL 24j, lalu volume 24j terbesar",
     `🕒 Diperbarui ${new Intl.DateTimeFormat("id-ID", { timeZone: timezone, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" }).format(updatedAt)}`,
   ];
   if (wallet) {
@@ -242,11 +198,12 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
     `<i>${label(pool.name)}</i>`,
     "",
     ...ownership(pool),
-    `💎 Simple Fee/TVL 24j <b>${percent(pool.simpleFeeTvl24hPercent)}</b>`,
+    `💎 Fee/Active TVL 24j <b>${percent(pool.feeActiveTvl24hPercent)}</b>`,
     `💧 TVL <b>${usd(pool.tvlUsd)}</b> · 📊 Volume 24j <b>${usd(pool.volume24h)}</b>`,
-    `💵 MCap <b>${usd(pool.marketCapUsd)}</b> · 🕓 Umur <b>${pool.ageDays.toFixed(1)} hari</b>`,
+    `💵 MCap <b>${usd(pool.marketCapUsd)}</b> · 🕓 Umur <b>${(pool.ageDays * 24).toFixed(1)} jam</b>`,
+    `🧬 Organic Score <b>${pool.organicScore.toFixed(2)}</b> · Holders <b>${pool.holders}</b>`,
+    `💦 Active TVL <b>${usd(pool.activeTvlUsd)}</b>`,
     `⚙️ Base fee ${percent(pool.baseFeePercent)} · Bin step <b>${pool.binStep ?? "Belum tersedia"}</b>`,
-    `📈 APR estimasi <b>${percent(pool.aprPercent)}</b> · Fee/TVL 24j ${percent(pool.feeTvl24hPercent)}`,
     "",
     `CA <code>${escapeHtml(pool.mint)}</code>`,
     `Pool <code>${escapeHtml(pool.address)}</code>`,
@@ -257,9 +214,9 @@ export function formatTopCareless(result: { pools: CarelessPool[]; limited: bool
   if (result.limited) lines.push("⚠️ Cakupan terbatas: batas 20 halaman × 100 pool tercapai; ranking hanya dari pool yang diperiksa.");
   else if (result.pools.length < config.limit) lines.push(`ℹ️ Hanya ${result.pools.length} pool memenuhi semua filter.`);
   lines.push("", "ℹ️ <b>Cara baca</b>",
-    "<i>Simple Fee/TVL 24j = Volume 24j × Base fee (%) ÷ TVL.</i>",
-    "<i>Estimasi belum termasuk dynamic fee atau potongan protokol.</i>",
-    "<i>APR = Fee/TVL 24j × 365, tanpa farm reward; bukan jaminan hasil posisi. Umur berdasarkan firstPool Jupiter.</i>");
+    "<i>Fee/Active TVL 24j memakai fee_active_tvl_ratio dari Meteora Pool Discovery, dalam persen.</i>",
+    "<i>Active TVL adalah likuiditas aktif/in-range; berbeda dari total TVL. Umur, Organic Score Jupiter dan holders mengikuti data pada web Meteora.</i>",
+    "<i>Angka pool bukan jaminan hasil posisi. Screening hanya pasangan SOL.</i>");
   if (wallet) lines.push("<i>Penanda memakai posisi nyata yang masih terbuka pada sinkronisasi terakhir. Token dicocokkan berdasarkan mint, pool berdasarkan alamat. Posisi yang diabaikan tetap dihitung; posisi virtual tidak dihitung.</i>");
   return lines.join("\n");
 }

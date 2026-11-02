@@ -348,11 +348,11 @@ export class PaperAutomation {
     if (!(await this.options.discover()) || !this.active() || this.availableSlots() <= 0) return;
     const blocked = new Set([...this.options.config.top_careless.blacklisted_mints, ...this.blocks().map((item) => item.mint), ...listPositions(this.options.db).map((item) => item.tokenMint), ...this.list().map((item) => item.mint)]);
     const screenAt = Date.now();
+    const screeningConfig = JSON.stringify(this.options.config.top_careless);
     const result = await (this.options.screening ?? fetchTopCareless)({ ...this.options.config.top_careless,
-      min_market_cap_usd: Math.max(1_500_000, this.options.config.top_careless.min_market_cap_usd),
+      min_market_cap_usd: Math.max(1_000_000, this.options.config.top_careless.min_market_cap_usd),
       min_token_age_days: Math.max(3, this.options.config.top_careless.min_token_age_days),
-      min_tvl_usd: Math.max(5_000, this.options.config.top_careless.min_tvl_usd), limit: 2000 }, this.options.apiKey ?? "",
-      this.options.config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag", this.options.config.jupiter.tokens_base_url,
+      min_tvl_usd: Math.max(5_000, this.options.config.top_careless.min_tvl_usd), limit: 2000 },
       { excludedMints: blocked, minBinStep: this.options.config.automation.min_bin_step });
     const preferredPool = getMeta(this.options.db, "automation_preferred_pool");
     const candidates = preferredPool ? [...result.pools.filter((pool) => pool.address === preferredPool), ...result.pools.filter((pool) => pool.address !== preferredPool)] : result.pools;
@@ -360,6 +360,7 @@ export class PaperAutomation {
     const amount = solLamports(this.options.config.automation.position_sol);
     for (const pool of candidates) {
       if (!this.active() || this.availableSlots() <= 0) break;
+      if (JSON.stringify(this.options.config.top_careless) !== screeningConfig) break;
       if (!this.eligible(pool.mint, pool.address)) continue;
       const id = randomUUID();
       try {
@@ -369,11 +370,12 @@ export class PaperAutomation {
             VALUES(?,'virtual',?,?,0,0,?,'RESERVED',?)`).run(id, pool.address, pool.mint, pool.binStep, Date.now());
         });
         const plan = await this.options.market.entry(pool.address, amount);
-        if (!fresh(plan.snapshot.at) || plan.snapshot.mint !== pool.mint || plan.snapshot.step < this.options.config.automation.min_bin_step || !this.active()) throw new Error("Validasi entry berubah");
+        if (!fresh(plan.snapshot.at) || plan.snapshot.mint !== pool.mint || plan.snapshot.step < Math.max(this.options.config.automation.min_bin_step, this.options.config.top_careless.min_bin_step) ||
+            JSON.stringify(this.options.config.top_careless) !== screeningConfig || !this.active()) throw new Error("Validasi entry berubah");
         if (!(await this.options.discover())) throw new Error("Discovery entry belum berhasil");
         const balance = await this.options.market.walletSol();
         this.transaction(() => {
-          if (!fresh(screenAt) || !fresh(plan.snapshot.at) || !this.active() || this.availableSlots() < 0 || listPositions(this.options.db).some((item) => item.tokenMint === pool.mint || item.pool === pool.address) ||
+          if (!fresh(screenAt) || !fresh(plan.snapshot.at) || !this.active() || this.availableSlots() < 0 || JSON.stringify(this.options.config.top_careless) !== screeningConfig || listPositions(this.options.db).some((item) => item.tokenMint === pool.mint || item.pool === pool.address) ||
               this.options.config.top_careless.blacklisted_mints.includes(pool.mint) || this.blocks().some((item) => item.mint === pool.mint)) throw new Error("Entry tidak lagi memenuhi syarat");
           if (balance + this.delta(SOL_MINT) < amount + plan.rent + plan.gas) throw new Error("Saldo simulasi tidak cukup untuk deposit, rent dan gas");
           this.change(SOL_MINT, -(amount + plan.rent + plan.gas));

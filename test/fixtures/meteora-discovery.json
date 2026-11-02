@@ -1,0 +1,32 @@
+{
+  "pool_address": "9JZrcAScnGQp7DSV4kBWfmGH2ao31sz5JbJ8cnpZ9uwv",
+  "pool_type": "dlmm",
+  "token_x": {
+    "address": "EJAxERvKU4kEVXn3NarjvRtgaMaJyP9ZuMeKA7JJpump",
+    "name": "Choo Choo",
+    "symbol": "CHOO",
+    "market_cap": 1803457.882931962,
+    "created_at": 1792608585000,
+    "organic_score": 69.12941753447312,
+    "holders": 5034
+  },
+  "token_y": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL",
+    "market_cap": 56400848579.95711,
+    "created_at": 1717577725527,
+    "organic_score": 98.983319856043,
+    "holders": 3820662
+  },
+  "tvl": 41138.583919826066,
+  "active_tvl": 39754.659321336774,
+  "volume": 274235.25366108393,
+  "fee_pct": 2,
+  "fee_active_tvl_ratio": 17.81051948744504,
+  "base_token_holders": 5034,
+  "dlmm_params": {
+    "bin_step": 100,
+    "collect_fee_mode": "both"
+  }
+}

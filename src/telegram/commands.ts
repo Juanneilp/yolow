@@ -41,6 +41,7 @@ const configSections: Record<string, { title: string; paths: string[] }> = {
   careless: { title: "TOP CARELESS STRAT", paths: [
     "top_careless.enabled", "top_careless.limit", "top_careless.min_market_cap_usd", "top_careless.min_token_age_days", "top_careless.min_tvl_usd",
     "top_careless.blacklisted_mints",
+    "top_careless.min_organic_score", "top_careless.min_holders", "top_careless.min_fee_active_tvl_24h_percent", "top_careless.min_bin_step",
   ] },
   automation: { title: "OTOMATISASI DRY-RUN", paths: [
     "automation.enabled", "automation.max_positions", "automation.position_sol", "automation.min_bin_step",
@@ -128,8 +129,8 @@ export function createCommandHandler(options: Options) {
   const applyValidatedConfigUpdate = async (path: string, rawValue: string): Promise<Reply> => {
     try {
       const update = prepareConfigUpdate(config, path, rawValue);
-      if (path !== "top_careless.blacklisted_mints" && (update.config.swap.enabled || update.config.top_careless.enabled || update.config.automation.enabled) && !jupiterApiKey) {
-        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau Top Careless Strat.");
+      if (path !== "top_careless.blacklisted_mints" && (update.config.swap.enabled || update.config.automation.enabled) && !jupiterApiKey) {
+        throw new Error("JUPITER_API_KEY dibutuhkan untuk swap atau otomatisasi.");
       }
       if (update.config.automation.enabled && !agent.executor.isDryRun()) throw new Error("Otomatisasi hanya tersedia dalam DRY-RUN");
       await writeConfigAtomically(configPath, `${JSON.stringify(update.config, null, 2)}\n`);
@@ -323,9 +324,7 @@ export function createCommandHandler(options: Options) {
         ]] };
         if (!config.top_careless.enabled) return { text: "🧪 TOP CARELESS STRAT\nFitur ini sedang dinonaktifkan di config.json.", replyMarkup };
         try {
-          if (!jupiterApiKey) throw new Error("JUPITER_API_KEY dibutuhkan untuk Top Careless Strat.");
-          const result = await fetchTopCareless(config.top_careless, jupiterApiKey,
-            config.candles.providers.meteora?.base_url ?? "https://dlmm.datapi.meteora.ag", config.jupiter.tokens_base_url);
+          const result = await fetchTopCareless(config.top_careless);
           return { text: formatTopCareless(result, config.top_careless, config.timezone, new Date(Date.now()), {
             positions: listPositions(db), syncedAt: Number(getMeta(db, "position_discovery_succeeded_at")),
             discoveryFailed: getMeta(db, "position_discovery_failed") === "true",

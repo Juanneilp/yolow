@@ -52,9 +52,9 @@ function harness(t: any) {
     },
     pnl: { refresh: async () => new Map([[pool, { fetchedAt: Date.now(), positions: new Map([[source,
       { deposits: 0.5, withdrawals: 0, claimed: 0, percent: 10 }]]) }]]) } as any,
-    screening: (async (criteria: any, _key: string, _base: string, _tokens: string, filters: any) => {
+    screening: (async (criteria: any, filters: any) => {
       calls.screening++;
-      assert.ok(criteria.min_market_cap_usd >= 1500000 && criteria.min_token_age_days >= 3 && criteria.min_tvl_usd >= 5000);
+      assert.ok(criteria.min_market_cap_usd >= 1000000 && criteria.min_token_age_days >= 3 && criteria.min_tvl_usd >= 5000);
       assert.equal(filters.minBinStep, 80);
       return { pools: pools.filter((item) => !filters.excludedMints.has(item.mint)), limited: false };
     }) as any,
@@ -169,6 +169,20 @@ test("manual blacklist excludes candidates and preferred reentry even if screeni
   setMeta(h.db, "automation_preferred_pool", pool);
   await new PaperAutomation(options).tick();
   assert.equal(h.calls.entry, 0); assert.equal(h.automation.list().length, 0);
+});
+
+test("Careless filters changed during entry release the reservation without a ledger debit", async (t) => {
+  const h = harness(t); h.candidates();
+  const entry = h.market.entry;
+  h.market.entry = async (...args) => {
+    const plan = await entry(...args);
+    h.cfg.top_careless.min_holders = 2000;
+    return plan;
+  };
+  await h.automation.tick();
+  assert.equal(h.calls.entry, 1);
+  assert.equal(h.automation.list().length, 0);
+  assert.equal(h.delta(), 0n);
 });
 
 test("blacklist added during entry releases the reservation without a ledger debit", async (t) => {

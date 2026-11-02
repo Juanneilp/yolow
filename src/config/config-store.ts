@@ -17,6 +17,7 @@ export const editablePaths = new Set([
   "automation.valuation_interval_sec",
   "top_careless.enabled", "top_careless.limit", "top_careless.min_market_cap_usd", "top_careless.min_token_age_days", "top_careless.min_tvl_usd",
   "top_careless.blacklisted_mints",
+  "top_careless.min_organic_score", "top_careless.min_holders", "top_careless.min_fee_active_tvl_24h_percent", "top_careless.min_bin_step",
   "execution.max_retries", "execution.priority_fee.microlamports", "execution.priority_fee.max_cap_microlamports",
   "swap.enabled", "swap.min_value_usd", "swap.slippage_bps", "swap.max_slippage_bps", "swap.max_retries",
   "candles.primary", "candles.fallback_chain", "candles.price_unit",

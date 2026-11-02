@@ -131,13 +131,20 @@ export function parseConfig(text: string): AppConfig {
   const swap = object(config.swap, "swap");
   if (config.top_careless === undefined) config.top_careless = {};
   const careless = object(config.top_careless, "top_careless");
-  for (const [key, value] of Object.entries({ enabled: true, limit: 10, min_market_cap_usd: 1_500_000, min_token_age_days: 3, min_tvl_usd: 5_000 })) {
+  for (const [key, value] of Object.entries({ enabled: true, limit: 10, min_market_cap_usd: 1_000_000, min_token_age_days: 3, min_tvl_usd: 5_000,
+    min_organic_score: 50, min_holders: 1000, min_fee_active_tvl_24h_percent: 4, min_bin_step: 80 })) {
     if (careless[key] === undefined) careless[key] = value;
   }
   if (typeof careless.enabled !== "boolean") throw new Error("top_careless.enabled must be boolean");
   integer(careless.limit, "top_careless.limit", 1);
   if (careless.limit > 100) throw new Error("top_careless.limit cannot exceed 100");
   for (const key of ["min_market_cap_usd", "min_token_age_days", "min_tvl_usd"]) number(careless[key], `top_careless.${key}`, 0);
+  number(careless.min_organic_score, "top_careless.min_organic_score", 0);
+  if (careless.min_organic_score > 100) throw new Error("top_careless.min_organic_score must not exceed 100");
+  number(careless.min_fee_active_tvl_24h_percent, "top_careless.min_fee_active_tvl_24h_percent", 0);
+  for (const [key, minimum] of [["min_holders", 0], ["min_bin_step", 1]] as const) {
+    if (!Number.isSafeInteger(careless[key]) || careless[key] < minimum) throw new Error(`top_careless.${key} must be a safe integer >= ${minimum}`);
+  }
   if (careless.blacklisted_mints === undefined) careless.blacklisted_mints = [];
   try {
     if (!Array.isArray(careless.blacklisted_mints) || careless.blacklisted_mints.some((mint: unknown) =>

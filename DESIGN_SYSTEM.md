@@ -65,15 +65,15 @@ Top Trending has been removed. Old commands, keyboard labels, and discovery/filt
 
 ### Top Careless Strat
 
-Use **🧪 Top Careless** in the inline feature menu and `/topcareless` in native commands and help. Keep Top Careless alongside Menu and Posisi & PnL in the persistent keyboard. Use a separate filter section with defaults: enabled, 10 results, market cap ≥ $1.5M, token age ≥ 3 days, pool TVL ≥ $5K, and an empty manual blacklist. All six `top_careless` parameters are editable without restart.
+Use **🧪 Top Careless** in the inline feature menu and `/topcareless` in native commands and help. Defaults: enabled, 10 results, Jupiter Organic Score ≥50 on both token sides, token market cap ≥$1M, token age ≥72 hours, holders ≥1,000, DLMM only, TVL ≥$5K, Fee/Active TVL 24h ≥4%, BinStep ≥80, and an empty manual blacklist. The four new hot-editable fields are `min_organic_score`, `min_holders`, `min_fee_active_tvl_24h_percent`, and `min_bin_step` under `top_careless`. Age config retains days for compatibility; show hours in the UI.
 
 Include `/blacklist` in Screening help as an advanced command, keeping the eight native commands. `/blacklist` lists full CAs, `/blacklist add <CA>` adds one, and `/blacklist remove <CA>` removes one. Validate exact Solana addresses locally; preserve case. Store in `top_careless.blacklisted_mints` with immediate application. Exclude all matching pools before limiting results and reject new automatic entry/reentry. Existing positions retain monitoring and exits. Keep manual blacklist and loss blocks independent. The screening filter header shows the manual blacklist count and `/blacklist`. Example confirmation: `✅ CA <CA> ditambahkan ke blacklist.`, followed by immediate-effect and Refresh guidance. Existing messages require Refresh to reflect changes.
 
-Show every qualifying token/SOL pool separately, ranked by Simple Fee/TVL 24h descending, then 24-hour volume descending, then pool address. Estimated base fees = Volume 24h × (base_fee_pct / 100); Simple Fee/TVL (%) = estimated base fees / TVL × 100. Read base_fee_pct from pool_config. Keep APR = Fee/TVL 24h percentage × 365 as a comparison; do not multiply percentages by 100 again or include farm rewards. Missing or invalid comparison data does not exclude a pool. Age comes from Jupiter's first pool timestamp. Do not apply holder, Organic Score, or maximum-age filters.
+Show every qualifying token/SOL DLMM pool separately, ranked by the actual Meteora web `fee_active_tvl_ratio` for 24h, then 24h volume, then pool address. Values are percentages: 4 means 4%, without multiplying by 100. Use `https://pool-discovery-api.datapi.meteora.ag/pools`, category all, timeframe 24h. Send the same web filters and validate records locally. Read Organic Score, holders and token age from the discovery response; do not fetch separate Jupiter metadata or infer Active TVL from total TVL.
 
-Cards show token/SOL, token name, market cap, age, TVL, volume 24h, base fee, Simple Fee/TVL 24h, estimated APR, Fee/TVL 24h, bin step, full copyable CA and pool address, and a **Buka Meteora DLMM** HTML link to `https://app.meteora.ag/dlmm/<pool>`. Example: `Base fee 0.30% · Simple Fee/TVL 24j 3.00%` for volume $100K and TVL $10K. Sanitize labels and escape HTML. Provide Refresh, Filter and Menu navigation. Show unavailable bin step, APR, or Fee/TVL explicitly; exclude records with missing required ranking/filter data or nonpositive TVL. Zero volume and zero base fee are valid. Scan until the final page or the cap of 20 × 100 pools, even when enough results have been found; keep source ordering by Fee/TVL 24h then volume 24h and compute the final ranking locally. If more pages remain beyond the cap, explain that ranking covers only scanned pools even when results are full. Explain empty results when applicable and that the simple estimate excludes dynamic fees and protocol deductions and does not guarantee position returns. Use the existing sender's message splitting for long output.
+Cards show bold Fee/Active TVL 24j, total TVL/volume, market cap/age in hours, Organic Score/holders, Active TVL, base fee/bin step, full CA and pool address, and **Buka Meteora DLMM**. Omit the old Simple Fee/TVL estimate and APR comparison. Reject missing/invalid required fields; do not label total TVL as Active TVL. Follow unique cursor `after_key` pages to completion or the cap of 20×100; reject malformed/repeated cursors and failed later pages without publishing partial results. Explain capped coverage, empty results and that pool metrics do not guarantee position returns. All HTML tags close on their own line; retain sender splitting and Refresh/Filter/Menu controls.
 
-Use a separate title, result count, active filter block, and update time with timezone. Each pool card starts with its rank and pair in bold, then its name in italics. Use medals for the first three ranks and a neutral marker after that; ranking only reflects the stated metric. Put the bold Simple Fee/TVL score first, followed by TVL/volume, market cap/age, base fee/bin step, and comparison APR/Fee/TVL. Separate addresses and the Meteora link from the metrics with whitespace. Keep the explanation under **Cara baca** at the end. Every HTML tag must close on the same line so message splitting preserves valid formatting.
+Use a separate title, result count, complete active filter block and time with timezone. Each card starts with its rank and pair in bold, then name in italics. Keep medals for the first three ranks and a neutral marker after that. Explain source/Active TVL under **Cara baca**.
 
 After the name and before metrics, show two independent bold wallet markers: `👛 Token: SUDAH ADA · 3 posisi di 2 pool` and `🏊 Pool ini: AKTIF · 2 posisi`. Match exact mint addresses on either side of each real open position and exact pool addresses; never compare symbols. Deduplicate position IDs and count distinct pools for each mint. A token held in another pool has SUDAH ADA at token level and BELUM ADA for this pool. Owned results remain in their original ranking.
 
@@ -88,11 +88,12 @@ Token Name
 👛 Token: SUDAH ADA · 3 posisi di 2 pool
 🏊 Pool ini: AKTIF · 2 posisi
 
-💎 Simple Fee/TVL 24j 3.00%
+💎 Fee/Active TVL 24j 4.00%
 💧 TVL $10.0K · 📊 Volume 24j $100.0K
-💵 MCap $1.5M · 🕓 Umur 7.0 hari
-⚙️ Base fee 0.30% · Bin step 25
-📈 APR estimasi 36.50% · Fee/TVL 24j 0.10%
+💵 MCap $1.0M · 🕓 Umur 72.0 jam
+🧬 Organic Score 50.00 · Holders 1000
+💦 Active TVL $5.0K
+⚙️ Base fee 0.30% · Bin step 80
 
 CA <full mint address>
 Pool <full pool address>

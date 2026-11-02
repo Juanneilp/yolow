@@ -27,7 +27,7 @@ flowchart LR
 | `src/positions/pnl.ts` | Cached Meteora lifetime SOL PnL and basis for actual positions |
 | `src/market-data/active-bin.ts` | Shared confirmed account polling in batches of up to 100 pools, including virtual pools; SDK decoding without pool clients; stale-feed suppression |
 | `src/market-data/rpc.ts` | Stable Connection facade over per-key HTTP/WSS clients; bounded quota failover and confirmation migration; per-key 429 cooldown, recovery probe and usage estimates |
-| `src/market-data/top-careless.ts` | Shared screening/ranking; pre-limit mint/bin-step exclusions for automation |
+| `src/market-data/top-careless.ts` | Shared Meteora web Pool Discovery screening, Fee/Active TVL 24h ranking, cursor pagination; pre-limit mint/bin-step exclusions for automation |
 | `src/market-data/candles.ts` | Historical data for journal marks only |
 | `src/execution/executor.ts` | Existing validated close/swap execution and recovery; rejects retired trigger reasons |
 | `src/storage/db.ts` | Existing positions, transactions, journal, snapshots and historical audit schema |
@@ -49,3 +49,5 @@ Existing live transaction protections remain: signer ownership, validated Jupite
 Secrets stay in `.env` or an external permission-600 keypair; logs, Telegram and SQLite must not contain key material. Timestamps are UTC epoch milliseconds; presentation uses the configured time zone. Direct file edits require restart; supported Telegram changes hot apply unless flagged otherwise. Run one Yolow process and restart only `yolow` after tested changes.
 
 Helius uses required `HELIUS_API_KEY` and optional `HELIUS_API_KEY_BACKUP`. Only an explicit quota-exhaustion 429 rotates keys. The active slot is persisted in meta without credentials. A stable Connection proxy delegates SDK methods to the current client; per-client blockhash confirmation waits receive a rotation AbortSignal and move without re-signing or rebroadcasting. Old SDK waits dispose their signature subscriptions. Ordinary rate limits retain per-key cooldown. Both exhausted keys recover through bounded probes; no billing-cycle date is guessed.
+
+Careless uses the public web discovery endpoint and its Jupiter-derived token metadata in the same response, without extra Jupiter or Helius requests. The `24h` fee/active-TVL ratio is already in percent. Age is the discovery token creation timestamp (milliseconds); compatibility config `min_token_age_days=3` is shown as 72 hours. Old Simple Fee/TVL and firstPool-derived screening are replaced. Existing history remains unchanged.
