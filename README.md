@@ -54,7 +54,24 @@ Pemeriksaan OOR berjalan setiap **15 detik**, memakai polling gabungan maksimal 
 
 Profil hemat memakai snapshot jurnal setiap **900 detik** (`history.snapshot_interval_sec`), discovery setiap 300 detik, dan polling bin setiap 15 detik (`rpc.oor_fallback_poll_interval_sec`, nama lama dipertahankan). TP/SL dapat terlambat hingga interval valuasi ditambah waktu pemrosesan; snapshot lebih jarang membuat metrik historis kurang rinci.
 
-Semua pemanggil HTTP RPC berbagi cooldown saat HTTP 429: 60, 120, 240, lalu maksimal 300 detik; `Retry-After` yang lebih lama tetap dihormati. Satu permintaan menguji pemulihan setelah cooldown. Retry 429 bawaan SDK dinonaktifkan. Ringkasan `Helius RPC usage` ditulis ke log per jam dan saat shutdown, berisi jumlah permintaan per metode, estimasi kredit (standar 1, `getProgramAccounts` 10), 429 dan permintaan yang ditunda. Ringkasan hanya mencakup proses berjalan; dashboard Helius adalah sumber tagihan sebenarnya.
+Semua pemanggil HTTP RPC berbagi cooldown per key saat HTTP 429: 60, 120, 240, lalu maksimal 300 detik; `Retry-After` yang lebih lama tetap dihormati. Satu permintaan menguji pemulihan setelah cooldown. Retry 429 bawaan SDK dinonaktifkan. Ringkasan `Helius RPC usage` ditulis ke log per jam dan saat shutdown, berisi jumlah permintaan per metode, estimasi kredit (standar 1, `getProgramAccounts` 10), slot key, 429 dan permintaan yang ditunda. Ringkasan hanya mencakup proses berjalan; dashboard Helius adalah sumber tagihan sebenarnya.
+
+## Dua key Helius dengan failover otomatis
+
+Isi langsung di `.env` server (jangan commit nilainya):
+
+```dotenv
+HELIUS_API_KEY=key_utama
+HELIUS_API_KEY_BACKUP=key_cadangan
+```
+
+Key cadangan opsional; nilai kosong atau sama dengan key utama tetap memakai satu key. Setelah mengisi atau mengganti `.env`, jalankan `pm2 restart yolow`. Tidak ada pengaturan key melalui Telegram atau `config.json`.
+
+HTTP 429 dengan pesan kuota habis (`max usage reached`, limit kredit bulanan, atau kredit exhausted) memindahkan koneksi HTTP dan WebSocket konfirmasi LIVE ke key lain yang tersedia. Error 429 biasa, timeout, credential tidak valid dan error transaksi tidak mengganti key. Request baca/simulasi dapat diulang maksimal sekali pada key lain; broadcast transaksi tidak diulang otomatis. Key aktif dipertahankan selama berhasil dan slot 1/2 disimpan di SQLite (`helius_rpc_active_slot`), tanpa key atau asumsi tanggal reset kuota.
+
+Konfirmasi LIVE yang sedang berjalan dibatalkan secara lokal dan dilanjutkan lewat koneksi baru dengan signature, commitment, blockhash dan batas kedaluwarsa yang sama. Konfirmasi mencoba setiap key maksimal sekali; kegagalan kembali ke rekonsiliasi PENDING/UNKNOWN. Strategi blockhash dipakai oleh semua pemanggil Yolow; API legacy signature-only tidak mendapat migrasi konfirmasi. Subscription akun pool tetap tidak dipakai.
+
+Jika kedua key habis, cooldown per key tetap berlaku dan hanya satu recovery probe diizinkan pada setiap key. Log hanya menyebut slot key dan ringkasan penggunaan; kedua secret disamarkan. Dua key bukan jaminan durasi satu bulan: pemakaian serta reset kredit masing-masing akun tetap menentukan.
 
 ## Konfigurasi dan dokumentasi
 

@@ -1,6 +1,6 @@
 import "./runtime.ts";
 import { chmod, lstat, readFile } from "node:fs/promises";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { YolowAgent } from "./agent.ts";
 import { parseConfig } from "./config/config.ts";
 import { loadSigner } from "./execution/executor.ts";
@@ -8,7 +8,7 @@ import { getMeta, openDatabase } from "./storage/db.ts";
 import { runBot } from "./telegram/bot.ts";
 import { createCommandHandler } from "./telegram/commands.ts";
 import { telegramApiBase } from "./security.ts";
-import { createRpcFetch } from "./market-data/rpc.ts";
+import { createHeliusConnection } from "./market-data/rpc.ts";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -51,18 +51,14 @@ if ((config.swap.enabled || config.top_careless.enabled || config.automation.ena
   throw new Error("JUPITER_API_KEY is required when swaps or Top Careless Strat are enabled");
 }
 
-function addApiKey(endpoint: string): string {
-  const url = new URL(endpoint);
-  url.searchParams.set("api-key", heliusKey);
-  return url.toString();
-}
-
-const rpc = createRpcFetch();
-const connection = new Connection(addApiKey(config.rpc.http_base), {
-  wsEndpoint: addApiKey(config.rpc.ws_base), commitment: "confirmed",
-  fetch: rpc.fetch, disableRetryOnRateLimit: true,
-});
 const db = openDatabase(process.env.DB_PATH || "./data/yolow.db");
+const rpc = createHeliusConnection({
+  httpBase: config.rpc.http_base, wsBase: config.rpc.ws_base,
+  primaryKey: heliusKey, backupKey: process.env.HELIUS_API_KEY_BACKUP,
+  activeSlot: Number(getMeta(db, "helius_rpc_active_slot")),
+  onActiveSlotChange: (slot) => setMeta(db, "helius_rpc_active_slot", String(slot)),
+});
+const { connection } = rpc;
 const keypairPath = process.env.AGENT_KEYPAIR_PATH?.trim();
 const agent = new YolowAgent({
   connection, wallet, db, config, telegramToken, chatId, jupiterApiKey, keypairPath,

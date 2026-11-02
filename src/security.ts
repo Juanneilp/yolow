@@ -1,4 +1,4 @@
-const secretEnvNames = ["TELEGRAM_BOT_TOKEN", "HELIUS_API_KEY", "JUPITER_API_KEY", "GMGN_API_KEY"];
+const secretEnvNames = ["TELEGRAM_BOT_TOKEN", "HELIUS_API_KEY_BACKUP", "HELIUS_API_KEY", "JUPITER_API_KEY", "GMGN_API_KEY"];
 
 export function redactSecrets(value: string): string {
   let message = value;

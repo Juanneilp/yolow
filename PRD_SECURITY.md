@@ -279,3 +279,7 @@ Audit ini mencakup kode aplikasi, metadata lokal yang relevan, test yang tersedi
 - [Solana simulateTransaction](https://solana.com/id/docs/rpc/http/simulatetransaction)
 - [Advisory bn.js GHSA-378v-28hj-76wf](https://github.com/advisories/GHSA-378v-28hj-76wf)
 - [Advisory bigint-buffer GHSA-3gc7-fjrx-p6mg](https://github.com/advisories/GHSA-3gc7-fjrx-p6mg)
+
+## Helius key failover
+
+`HELIUS_API_KEY_BACKUP` is optional and redacted alongside the primary key from errors, Telegram presentation and journal exports. Only slot 1/2 is stored under meta `helius_rpc_active_slot`; no key is written to SQLite/config or logs. Quota detection inspects at most 8 KiB of a cloned 429 response. HTTP/WSS endpoints remain pinned to trusted Helius hosts. Reads/simulations may retry once on the other key; broadcasts are not replayed. Key rotation aborts local SDK confirmation waits, disposes old signature subscriptions and resumes the original signature/blockhash/expiry via the other client. No signing, amount, simulation or duplicate-send protections are relaxed. Failure and unknown confirmation state retain existing reconciliation. Legacy signature-only confirmations are forwarded without migration; Yolow uses blockhash strategies.
