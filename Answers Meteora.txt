@@ -1,0 +1,46 @@
+Answers:
+Q1.
+Found a relevant entry: closePositionIfEmpty is documented as "closes only when empty; otherwise the program no-ops/fails according to program rules." Let me check for more detail on chunking order and race conditions.
+
+
+Searched for 2 patterns
+The documentation confirms the sequential pattern is the one shown in DLMM TS SDK Examples (for (const tx of txs) { await sendAndConfirmTransaction(...) }), matching what you're doing.
+
+On the race condition: the docs state closePositionIfEmpty "closes only when empty; otherwise the program no-ops/fails according to program rules" (DLMM TS SDK Reference). Only the last chunk actually triggers the close step — the SDK's chunking + shouldClaimAndClose design assumes close happens after liquidity across all chunks is removed. The reference doesn't give lower-level detail on what happens if a close-position instruction were attempted while other chunks still hold liquidity (e.g., whether it errors or no-ops), and I don't see documentation addressing out-of-order confirmation race conditions for this specific multi-chunk flow.
+
+
+Q2.
+The docs only mention these as "simulation-based compute budget helpers" without specifying exact buffer math (30%/+50k/+200k/1.4M fallback) or per-chunk CU costs for Token-2022/transfer-hook cases — I can't verify those specific numbers against the documentation.
+
+That said, based on what's documented: the SDK's getEstimatedComputeUnitUsageWithBuffer/getEstimatedComputeUnitIxWithBuffer exist specifically to size the compute budget per transaction via simulation, implying CU needs vary by instruction mix (and especially by token program — Token-2022 with transfer-hooks adds extra CPI cost that a flat limit may not account for). The docs don't give a definitive "1.2M is enough" number, so I can't confirm that's always sufficient. I'd recommend keeping the SDK's simulation-based estimate and only appending your own setComputeUnitPrice, since the reference presents these helpers as the intended mechanism rather than a fixed constant.
+
+Q3. 
+The documentation doesn't explicitly describe the "retry after partial close" scenario or an SDK-level idempotency check. Here's what's grounded in the docs:
+
+Position closure semantics: once a position is fully emptied (zero liquidity, zero pending fees/rewards), close_position_if_empty closes the account (DLMM Program Instructions). Once closed, the account no longer exists on-chain.
+Retrying removeLiquidity on an already-closed position is not something the docs describe directly. Since remove_liquidity_by_range2/remove_liquidity_by_range validate the position account (InvalidPosition, error 6008, triggered when "the position account or requested bin range does not match the operation") per DLMM Program Errors, if the position account itself no longer exists, you'd more likely hit a client-side/RPC "account not found" style failure when the SDK tries to fetch/deserialize it, rather than a program-level "no liquidity" error — but the docs don't explicitly confirm this distinction.
+No documented "already fully closed" detection helper is mentioned in the SDK reference or examples.
+I couldn't find documentation that directly specifies the exact error returned on retry or a recommended pre-check method — this would need confirming against the SDK's error-handling source rather than these docs.
+
+The docs cover position-close mechanics (close_position_if_empty, error code 6008 InvalidPosition) but don't document the specific retry/idempotency behavior you're asking about — i.e., what error removeLiquidity throws against an already-closed position, or a recommended "check before retry" pattern. You may want to check the SDK source directly (e.g., does it call getAccountInfo on the position before building instructions) for that detail.
+
+DLMM Program Errors
+DLMM Program Instructions
+DLMM TS SDK Examples
+
+Q4.
+I don't see documentation that explicitly confirms the skipUnwrapSOL default behavior, the exact interaction between SOL unwrapping and closePositionIfEmpty rent reclamation in the same transaction, or edge cases where a position ends up "empty-but-open" after a partial claim failure.
+
+
+Searched for 2 patterns and ran 1 command
+
+Found results for skipUnwrapSOL removeLiquidity native SOL unwrap
+This confirms the structure, but doesn't spell out the exact unwrap/rent timing you're asking about. Based on what's documented:
+
+removeLiquidity with skipUnwrapSOL = false (default) performs: trim range → create ATAs → optionally claim fees/rewards → optionally closes the position if empty → chunks → removeLiquidityByRange2 (DLMM TS SDK Reference). The reference lists wrapSOLInstruction/unwrapSOLInstruction as native SOL wrapping helpers used by the SDK, implying unwrap happens as part of the same instruction set/transaction, but it doesn't explicitly state "SOL is returned natively in the same tx" in those words.
+closePositionIfEmpty is documented as closing "only when empty; otherwise the program no-ops/fails according to program rules" — meaning if a claim step fails or liquidity/fees/rewards remain, the close step won't execute, and you'd be left with an open (and possibly non-empty) position requiring a separate closePositionIfEmpty or closePosition call.
+The docs don't explicitly describe a specific "empty-but-open" failure scenario beyond this general no-op/fail rule, so I can't confirm further edge-case specifics (e.g., partial claim failure behavior) beyond that statement.
+
+DLMM TS SDK Reference
+DLMM Program Instructions
+DLMM TS SDK Examples
